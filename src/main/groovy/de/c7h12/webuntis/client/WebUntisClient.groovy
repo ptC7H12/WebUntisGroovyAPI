@@ -207,6 +207,104 @@ class WebUntisClient {
 
     // ========== Enhanced 2017 API Methods ==========
 
+    def base32Decode(String base32) {
+        int i = 0
+        int index = 0
+        int offset = 0
+        int digit
+        byte[] bytes = new byte[(base32.length() * 5) / 8]
+
+        int[] base32Lookup = [
+                0xFF, 0xFF, 0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F,
+                0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+                0xFF, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06,
+                0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E,
+                0x0F, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16,
+                0x17, 0x18, 0x19, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+                0xFF, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06,
+                0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E,
+                0x0F, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16,
+                0x17, 0x18, 0x19, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF
+        ] as int[]
+
+        while (i < base32.length()) {
+            // FIX: in Groovy muss '0' explizit als charCode behandelt werden
+            int lookup = (int)base32.charAt(i) - (int)'0'
+
+            if (lookup < 0 || lookup >= base32Lookup.length) {
+                i++
+                continue
+            }
+
+            digit = base32Lookup[lookup]
+            if (digit == 0xFF) {
+                i++
+                continue
+            }
+
+            if (index <= 3) {
+                index = (index + 5) % 8
+                if (index == 0) {
+                    bytes[offset] = (byte)(bytes[offset] | digit)
+                    offset++
+                    if (offset >= bytes.length) break
+                } else {
+                    bytes[offset] = (byte)(bytes[offset] | (digit << (8 - index)))
+                }
+            } else {
+                index = (index + 5) % 8
+                bytes[offset] = (byte)(bytes[offset] | (digit >>> index))
+                offset++
+                if (offset >= bytes.length) break
+                bytes[offset] = (byte)(bytes[offset] | (digit << (8 - index)))
+            }
+            i++
+        }
+        return bytes
+    }
+
+// --- OTP Generator ---
+    def createOtp(String secret, Clock clock = Clock.systemDefaultZone()) {
+        if (!secret) return "000000"
+        try {
+            println "DEBUG: secret (raw)   = ${secret}"
+            byte[] key = base32Decode(secret.toUpperCase(Locale.ROOT))
+            println "DEBUG: decoded key    = " + key.collect { String.format("%02X", it) }.join(" ")
+
+            long timeWindow = clock.millis() / 30_000L
+            println "DEBUG: timeWindow     = ${timeWindow}"
+
+            // HMAC-SHA1 vorbereiten
+            byte[] data = new byte[8]
+            long value = timeWindow
+            for (int i = 7; i >= 0; i--) {
+                data[i] = (byte)(value & 0xFF)
+                value >>>= 8
+            }
+            println "DEBUG: message (hex)  = " + data.collect { String.format("%02X", it) }.join(" ")
+
+            Mac mac = Mac.getInstance("HmacSHA1")
+            mac.init(new SecretKeySpec(key, "HmacSHA1"))
+            byte[] hash = mac.doFinal(data)
+            println "DEBUG: hmac (hex)     = " + hash.collect { String.format("%02X", it) }.join(" ")
+
+            int offset = hash[hash.length - 1] & 0xF
+            long binary =
+                    ((hash[offset] & 0x7F) << 24) |
+                            ((hash[offset + 1] & 0xFF) << 16) |
+                            ((hash[offset + 2] & 0xFF) << 8) |
+                            (hash[offset + 3] & 0xFF)
+
+            int code = (int)(binary % 1_000_000L)
+            def otp = String.format("%06d", code)
+            println "DEBUG: final OTP      = ${otp}"
+            return otp
+        } catch (Exception e) {
+            e.printStackTrace()
+            return "000000"
+        }
+    }
+
     // WebUntis Secret-basierte Authentifizierung für 2017 API mit Master-Daten
     WebUntisSession authenticateWithSecret(String school, String username, String appSecret, String server) {
         // Server URL normalisieren
