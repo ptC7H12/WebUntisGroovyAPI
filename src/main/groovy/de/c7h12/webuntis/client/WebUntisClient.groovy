@@ -521,7 +521,7 @@ class WebUntisClient {
                               ]
                       ]]
 
-        def request = createJsonRpcRequest("getUserData2017", params)
+        def request = createJsonRpcRequest("getTimetable2017", params)
         def headers = createStandardHeaders()
         def entity = new HttpEntity<>(request, headers)
 
