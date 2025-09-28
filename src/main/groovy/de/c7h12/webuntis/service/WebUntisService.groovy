@@ -2,6 +2,7 @@ package de.c7h12.webuntis.service
 
 import de.c7h12.webuntis.client.WebUntisClient
 import de.c7h12.webuntis.client.WebUntisSession
+import de.c7h12.webuntis.client.WebUntisException
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.stereotype.Service
 
@@ -124,27 +125,24 @@ class WebUntisService {
         }
     }
 
-    // ========== Enhanced 2017 API Methods (Optional) ==========
+    // ========== Enhanced 2017 API Methods ==========
 
-    List<Map> getTimetable2017Enhanced(String school, String username, String password, String server, LocalDate startDate, LocalDate endDate, String elementType = "STUDENT", String appSecret = null) {
+    List<Map> getTimetable2017Enhanced(String school, String username, String password, String server,
+                                       LocalDate startDate, LocalDate endDate, String elementType = "STUDENT", String appSecret) {
         WebUntisSession session = null
         try {
-            if (appSecret) {
-                // Mit App Secret: getUserData2017 lädt automatisch Master-Daten
-                session = webUntisClient.authenticateWithSecret(school, username, appSecret, server)
-
-                def timetable = webUntisClient.getTimetable2017Enhanced(session, startDate, endDate, session.personId, elementType)
-
-                // Zusätzliche Formatierung mit den bereits geladenen Master-Daten
-                return formatTimetableWithTimeInfo(timetable)
-            } else {
-                // Fallback auf Standard-Authentifizierung ohne Master-Daten
-                session = webUntisClient.authenticate(school, username, password, server)
-
-                def timetable = webUntisClient.getTimetable2017(session, startDate, endDate, session.personId, elementType)
-
-                return formatTimetableWithTimeInfo(timetable)
+            if (!appSecret) {
+                throw new WebUntisException("appSecret ist für 2017 API Methoden erforderlich")
             }
+
+            // 2017 API mit App Secret - getUserData2017 wird automatisch aufgerufen
+            session = webUntisClient.authenticateWithSecret(school, username, appSecret, server)
+            println "DEBUG: Using 2017 API enhanced with app secret authentication"
+
+            // Enhanced Timetable mit automatischem getUserData2017 Aufruf
+            def timetable = webUntisClient.getTimetable2017Enhanced(session, startDate, endDate, session.personId, elementType)
+
+            return formatTimetableWithTimeInfo(timetable)
 
         } finally {
             if (session) {
@@ -153,11 +151,19 @@ class WebUntisService {
         }
     }
 
-    List<Map> getTimetable2017(String school, String username, String password, String server, LocalDate startDate, LocalDate endDate, String elementType = "STUDENT") {
+    List<Map> getTimetable2017(String school, String username, String password, String server,
+                               LocalDate startDate, LocalDate endDate, String elementType = "STUDENT", String appSecret) {
         WebUntisSession session = null
         try {
-            session = webUntisClient.authenticate(school, username, password, server)
+            if (!appSecret) {
+                throw new WebUntisException("appSecret ist für 2017 API Methoden erforderlich")
+            }
 
+            // 2017 API mit App Secret
+            session = webUntisClient.authenticateWithSecret(school, username, appSecret, server)
+            println "DEBUG: Using 2017 API with app secret authentication"
+
+            // Standard Timetable mit automatischem getUserData2017 Aufruf
             def timetable = webUntisClient.getTimetable2017(session, startDate, endDate, session.personId, elementType)
 
             return formatTimetableWithTimeInfo(timetable)
@@ -168,6 +174,92 @@ class WebUntisService {
             }
         }
     }
+
+    List<Map> getHomework2017(String school, String username, String password, String server,
+                              LocalDate startDate, LocalDate endDate, String appSecret) {
+        WebUntisSession session = null
+        try {
+            if (!appSecret) {
+                throw new WebUntisException("appSecret ist für 2017 API Methoden erforderlich")
+            }
+
+            session = webUntisClient.authenticateWithSecret(school, username, appSecret, server)
+
+            // Homework mit automatischem getUserData2017 Aufruf
+            def homework = webUntisClient.getHomework2017(session, startDate, endDate, session.personId)
+
+            return formatHomeworkWithTimeInfo(homework)
+
+        } finally {
+            if (session) {
+                webUntisClient.logout(session)
+            }
+        }
+    }
+
+    List<Map> getMessagesOfDay2017(String school, String username, String password, String server,
+                                   LocalDate date = LocalDate.now(), String appSecret) {
+        WebUntisSession session = null
+        try {
+            if (!appSecret) {
+                throw new WebUntisException("appSecret ist für 2017 API Methoden erforderlich")
+            }
+
+            session = webUntisClient.authenticateWithSecret(school, username, appSecret, server)
+
+            // Messages mit automatischem getUserData2017 Aufruf
+            return webUntisClient.getMessagesOfDay2017(session, date)
+
+        } finally {
+            if (session) {
+                webUntisClient.logout(session)
+            }
+        }
+    }
+
+    List<Map> getStudentAbsences2017(String school, String username, String password, String server,
+                                     LocalDate startDate, LocalDate endDate, boolean includeExcused = true,
+                                     boolean includeUnexcused = true, String appSecret) {
+        WebUntisSession session = null
+        try {
+            if (!appSecret) {
+                throw new WebUntisException("appSecret ist für 2017 API Methoden erforderlich")
+            }
+
+            session = webUntisClient.authenticateWithSecret(school, username, appSecret, server)
+
+            // Absences mit automatischem getUserData2017 Aufruf
+            def absences = webUntisClient.getStudentAbsences2017(session, startDate, endDate, includeExcused, includeUnexcused)
+
+            return formatAbsencesWithTimeInfo(absences)
+
+        } finally {
+            if (session) {
+                webUntisClient.logout(session)
+            }
+        }
+    }
+
+    Map getUserData2017(String school, String username, String password, String server, String appSecret) {
+        WebUntisSession session = null
+        try {
+            if (!appSecret) {
+                throw new WebUntisException("appSecret ist für 2017 API Methoden erforderlich")
+            }
+
+            session = webUntisClient.authenticateWithSecret(school, username, appSecret, server)
+
+            // Expliziter getUserData2017 Aufruf
+            return webUntisClient.getUserData2017(session)
+
+        } finally {
+            if (session) {
+                webUntisClient.logout(session)
+            }
+        }
+    }
+
+    // ========== Formatting Methods ==========
 
     // Formatierung für 2017 API mit Zeitinfos
     private List<Map> formatTimetableWithTimeInfo(List<Map> timetable) {
@@ -194,6 +286,70 @@ class WebUntisService {
             entry.substitutionInfo = generate2017SubstitutionInfo(entry)
 
             return entry
+        }
+    }
+
+    private List<Map> formatHomeworkWithTimeInfo(List<Map> homework) {
+        return homework.collect { hw ->
+            // Datum formatieren
+            if (hw.date) {
+                hw.dateFormatted = formatWebUntisDate(hw.date as Integer)
+            }
+            if (hw.dueDate) {
+                hw.dueDateFormatted = formatWebUntisDate(hw.dueDate as Integer)
+            }
+
+            // Status bestimmen
+            if (hw.dueDate) {
+                def dueDate = LocalDate.parse(formatWebUntisDate(hw.dueDate as Integer))
+                def today = LocalDate.now()
+
+                if (hw.completed) {
+                    hw.status = "completed"
+                    hw.statusDescription = "Erledigt"
+                } else if (dueDate.isBefore(today)) {
+                    hw.status = "overdue"
+                    hw.statusDescription = "Überfällig"
+                } else if (dueDate.isEqual(today)) {
+                    hw.status = "due_today"
+                    hw.statusDescription = "Heute fällig"
+                } else {
+                    hw.status = "pending"
+                    hw.statusDescription = "Ausstehend"
+                }
+            }
+
+            return hw
+        }
+    }
+
+    private List<Map> formatAbsencesWithTimeInfo(List<Map> absences) {
+        return absences.collect { absence ->
+            // Datum formatieren
+            if (absence.startDate) {
+                absence.startDateFormatted = formatWebUntisDate(absence.startDate as Integer)
+            }
+            if (absence.endDate) {
+                absence.endDateFormatted = formatWebUntisDate(absence.endDate as Integer)
+            }
+
+            // Zeit formatieren
+            if (absence.startTime) {
+                absence.startTimeFormatted = formatWebUntisTime(absence.startTime as Integer)
+            }
+            if (absence.endTime) {
+                absence.endTimeFormatted = formatWebUntisTime(absence.endTime as Integer)
+            }
+
+            // Zeitbereich
+            if (absence.startTimeFormatted && absence.endTimeFormatted) {
+                absence.timeRange = "${absence.startTimeFormatted} - ${absence.endTimeFormatted}"
+            }
+
+            // Status-Info
+            absence.statusDescription = absence.excused ? "Entschuldigt" : "Unentschuldigt"
+
+            return absence
         }
     }
 
@@ -244,62 +400,6 @@ class WebUntisService {
         }
 
         return infoTexts.join(" | ") ?: null
-    }
-
-    List<Map> getHomework2017(String school, String username, String password, String server, LocalDate startDate, LocalDate endDate) {
-        WebUntisSession session = null
-        try {
-            session = webUntisClient.authenticate(school, username, password, server)
-
-            return webUntisClient.getHomework2017(session, startDate, endDate, session.personId)
-
-        } finally {
-            if (session) {
-                webUntisClient.logout(session)
-            }
-        }
-    }
-
-    List<Map> getMessagesOfDay2017(String school, String username, String password, String server, LocalDate date = LocalDate.now()) {
-        WebUntisSession session = null
-        try {
-            session = webUntisClient.authenticate(school, username, password, server)
-
-            return webUntisClient.getMessagesOfDay2017(session, date)
-
-        } finally {
-            if (session) {
-                webUntisClient.logout(session)
-            }
-        }
-    }
-
-    List<Map> getStudentAbsences2017(String school, String username, String password, String server, LocalDate startDate, LocalDate endDate, boolean includeExcused = true, boolean includeUnexcused = true) {
-        WebUntisSession session = null
-        try {
-            session = webUntisClient.authenticate(school, username, password, server)
-
-            return webUntisClient.getStudentAbsences2017(session, startDate, endDate, includeExcused, includeUnexcused)
-
-        } finally {
-            if (session) {
-                webUntisClient.logout(session)
-            }
-        }
-    }
-
-    Map getUserData2017(String school, String username, String password, String server) {
-        WebUntisSession session = null
-        try {
-            session = webUntisClient.authenticate(school, username, password, server)
-
-            return webUntisClient.getUserData2017(session)
-
-        } finally {
-            if (session) {
-                webUntisClient.logout(session)
-            }
-        }
     }
 
     // Sichere Methoden die bei fehlenden Berechtigungen leere Listen zurückgeben
