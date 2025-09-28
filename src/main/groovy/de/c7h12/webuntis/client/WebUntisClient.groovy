@@ -9,9 +9,16 @@ import org.springframework.http.ResponseEntity
 import org.springframework.stereotype.Component
 import org.springframework.web.client.RestTemplate
 
+import javax.crypto.Mac
+import javax.crypto.spec.SecretKeySpec
 import java.net.URLEncoder
+import java.nio.ByteBuffer
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
+import org.apache.commons.codec.binary.Base32
+import javax.crypto.Mac
+import javax.crypto.spec.SecretKeySpec
+import java.time.Clock
 
 @Component
 class WebUntisClient {
@@ -29,9 +36,9 @@ class WebUntisClient {
         def url = "https://${normalizedServer}/WebUntis/jsonrpc.do?school=${encodedSchool}"
 
         def params = [
-                user: username,
+                user    : username,
                 password: password,
-                client: "SpringBootGroovyApp"
+                client  : "SpringBootGroovyApp"
         ]
 
         // Manche WebUntis Installationen brauchen den school parameter im body
@@ -63,7 +70,9 @@ class WebUntisClient {
             def result = jsonResponse.get("result")
             def sessionId = result.get("sessionId").asText()
             def personId = result.get("personId").asInt()
-            def cookies = response.headers.getFirst("Set-Cookie")
+
+            // Cookies aus der Response extrahieren
+            def cookies = response.getHeaders().getFirst("Set-Cookie")
 
             return new WebUntisSession(sessionId, personId, cookies, school, normalizedServer)
 
@@ -78,19 +87,19 @@ class WebUntisClient {
         // Erweiterte Parameter wie im Java-Code
         def element = [
                 type: elementType,
-                id: elementId
+                id  : elementId
         ]
 
         def options = [
-                startDate: startDate.format(DateTimeFormatter.ofPattern("yyyyMMdd")),
-                endDate: endDate.format(DateTimeFormatter.ofPattern("yyyyMMdd")),
-                element: element,
+                startDate        : startDate.format(DateTimeFormatter.ofPattern("yyyyMMdd")),
+                endDate          : endDate.format(DateTimeFormatter.ofPattern("yyyyMMdd")),
+                element          : element,
                 onlyBaseTimetable: false,
-                showInfo: true,
-                showSubstText: true,
-                showLsText: true,
-                showLsNumber: true,
-                showStudentgroup: true
+                showInfo         : true,
+                showSubstText    : true,
+                showLsText       : true,
+                showLsNumber     : true,
+                showStudentgroup : true
         ]
 
         def request = createJsonRpcRequest("getTimetable", [options: options])
@@ -196,20 +205,240 @@ class WebUntisClient {
         }
     }
 
-    // ========== 2017 API Methods (Optional Enhanced Features) ==========
+    // ========== Enhanced 2017 API Methods ==========
 
-    List<Map> getTimetable2017(WebUntisSession session, LocalDate startDate, LocalDate endDate, int elementId, String elementType) {
-        def url = "https://${session.server}/WebUntis/jsonrpc.do?school=${session.school}"
+    // WebUntis Secret-basierte Authentifizierung für 2017 API mit Master-Daten
+    WebUntisSession authenticateWithSecret(String school, String username, String appSecret, String server) {
+        // Server URL normalisieren
+        def normalizedServer = server.startsWith("https://") ? server.substring(8) : server
+        normalizedServer = normalizedServer.startsWith("http://") ? normalizedServer.substring(7) : normalizedServer
 
-        def options = [
-                id: elementId,
-                type: elementType,
-                startDate: startDate.format(DateTimeFormatter.ofPattern("yyyy-MM-dd")),
-                endDate: endDate.format(DateTimeFormatter.ofPattern("yyyy-MM-dd"))
+        def encodedSchool = URLEncoder.encode(school, "UTF-8")
+        def url = "https://${normalizedServer}/WebUntis/jsonrpc_intern.do?school=${encodedSchool}"
+
+        // Zeitbasierter OTP-Code generieren
+        def currentTime = System.currentTimeMillis()
+        def otp = createOtp(appSecret)
+
+        def authParams = [
+                user      : username,
+                otp       : otp,
+                clientTime: currentTime.toString()
         ]
 
-        def request = createJsonRpcRequest("getTimetable2017", options)
-        def headers = createAuthenticatedHeaders(session)
+        def params = [[
+                              masterDataTimestamp: currentTime.toString(),
+                              type               : "STUDENT",
+                              auth               : authParams
+                      ]]
+
+        def request = createJsonRpcRequest("getUserData2017", params)
+        def headers = createStandardHeaders()
+        def entity = new HttpEntity<>(request, headers)
+
+        try {
+            println "DEBUG: Enhanced Auth with URL: ${url}"
+            println "DEBUG: OTP: ${otp}, ClientTime: ${currentTime}"
+            println "DEBUG: Request: ${objectMapper.writeValueAsString(request)}"
+
+            ResponseEntity<String> response = restTemplate.postForEntity(url, entity, String)
+            JsonNode jsonResponse = objectMapper.readTree(response.body)
+
+            if (jsonResponse.has("error")) {
+                throw new WebUntisException("Enhanced authentication failed: ${jsonResponse.get("error").get("message").asText()}")
+            }
+
+            // Session aus getUserData2017 Response extrahieren
+            def result = jsonResponse.get("result")
+            def userData = result.get("userData")
+            def masterData = result.get("masterData")
+
+            def sessionId = "enhanced-session-${System.currentTimeMillis()}"
+            def personId = userData.get("elemId").asInt()
+
+            def cookies = response.getHeaders().getFirst("Set-Cookie")
+            def session = new WebUntisSession(sessionId, personId, cookies, school, normalizedServer, appSecret, username)
+
+            // Master-Daten in Session speichern für späteres Mapping
+            session.masterData = parseMasterDataFrom2017Response(masterData)
+
+            return session
+
+        } catch (Exception e) {
+            throw new WebUntisException("Enhanced authentication error: ${e.message}")
+        }
+    }
+
+    // Master-Daten aus der 2017 getUserData Response extrahieren
+    private Map parseMasterDataFrom2017Response(JsonNode masterData) {
+        def parsedData = [
+                subjects   : [:],
+                teachers   : [:],
+                rooms      : [:],
+                klassen    : [:],
+                timeGrid   : [:],
+                schoolyears: [],
+                holidays   : []
+        ]
+
+        // Subjects extrahieren
+        if (masterData.has("subjects")) {
+            masterData.get("subjects").each { su ->
+                parsedData.subjects[su.get("id").asLong()] = [
+                        id           : su.get("id").asLong(),
+                        name         : su.get("name").asText(),
+                        longName     : su.get("longName").asText(),
+                        departmentIds: su.has("departmentIds") ? su.get("departmentIds").collect { it.asInt() } : [],
+                        foreColor    : su.has("foreColor") ? su.get("foreColor").asText() : null,
+                        backColor    : su.has("backColor") ? su.get("backColor").asText() : null,
+                        active       : su.has("active") ? su.get("active").asBoolean() : true
+                ]
+            }
+        }
+
+        // Teachers extrahieren
+        if (masterData.has("teachers")) {
+            masterData.get("teachers").each { te ->
+                parsedData.teachers[te.get("id").asLong()] = [
+                        id           : te.get("id").asLong(),
+                        name         : te.get("name").asText(),
+                        firstName    : te.has("firstName") ? te.get("firstName").asText() : "",
+                        lastName     : te.has("lastName") ? te.get("lastName").asText() : "",
+                        departmentIds: te.has("departmentIds") ? te.get("departmentIds").collect { it.asInt() } : [],
+                        active       : te.has("active") ? te.get("active").asBoolean() : true
+                ]
+            }
+        }
+
+        // Rooms extrahieren
+        if (masterData.has("rooms")) {
+            masterData.get("rooms").each { ro ->
+                parsedData.rooms[ro.get("id").asLong()] = [
+                        id          : ro.get("id").asLong(),
+                        name        : ro.get("name").asText(),
+                        longName    : ro.get("longName").asText(),
+                        departmentId: ro.has("departmentId") ? ro.get("departmentId").asInt() : 0,
+                        active      : ro.has("active") ? ro.get("active").asBoolean() : true
+                ]
+            }
+        }
+
+        // Klassen extrahieren
+        if (masterData.has("klassen")) {
+            masterData.get("klassen").each { kl ->
+                parsedData.klassen[kl.get("id").asLong()] = [
+                        id          : kl.get("id").asLong(),
+                        name        : kl.get("name").asText(),
+                        longName    : kl.get("longName").asText(),
+                        departmentId: kl.has("departmentId") ? kl.get("departmentId").asInt() : 0,
+                        startDate   : kl.has("startDate") ? kl.get("startDate").asText() : null,
+                        endDate     : kl.has("endDate") ? kl.get("endDate").asText() : null,
+                        active      : kl.has("active") ? kl.get("active").asBoolean() : true
+                ]
+            }
+        }
+
+        // TimeGrid extrahieren
+        if (masterData.has("timeGrid")) {
+            def timeGrid = masterData.get("timeGrid")
+            if (timeGrid.has("days")) {
+                def days = [:]
+                timeGrid.get("days").each { day ->
+                    def dayName = day.get("day").asText()
+                    def units = []
+                    if (day.has("units")) {
+                        day.get("units").each { unit ->
+                            units << [
+                                    label    : unit.get("label").asText(),
+                                    startTime: unit.get("startTime").asText(),
+                                    endTime  : unit.get("endTime").asText()
+                            ]
+                        }
+                    }
+                    days[dayName] = units
+                }
+                parsedData.timeGrid = days
+            }
+        }
+
+        return parsedData
+    }
+
+    List<Map> getTimetable2017Enhanced(WebUntisSession session, LocalDate startDate, LocalDate endDate, int elementId, String elementType) {
+        // 2017 API verwendet jsonrpc_intern.do
+        def url = "https://${session.server}/WebUntis/jsonrpc_intern.do?school=${session.school}"
+
+        def authParams = [
+                user      : session.username,
+                otp       : createOtp(session.appSecret),
+                clientTime: System.currentTimeMillis().toString()
+        ]
+
+        def params = [[
+                              element                : [
+                                      id     : elementId,
+                                      type   : elementType,
+                                      keyType: "id"
+                              ],
+                              startDate              : startDate.format(DateTimeFormatter.ofPattern("yyyy-MM-dd")),
+                              endDate                : endDate.format(DateTimeFormatter.ofPattern("yyyy-MM-dd")),
+                              klasseFields           : ["id", "name", "longname", "externalkey"],
+                              roomFields             : ["id", "name", "longname", "externalkey"],
+                              subjectFields          : ["id", "name", "longname", "externalkey"],
+                              teacherFields          : ["id", "name", "longname", "externalkey"],
+                              timetableFields        : ["id", "date", "startTime", "endTime", "kl", "te", "su", "ro", "lstype", "code", "info", "substText", "lstext", "lsnumber", "activityType", "statflags", "sg", "bkRemark", "bkText"],
+                              timetableFieldsRequired: true,
+                              showLsText             : true,
+                              showStudentgroup       : true,
+                              showLsNumber           : true,
+                              showSubstText          : true,
+                              showInfo               : true,
+                              showBooking            : true,
+                              showTopic              : true,
+                              showHomework           : false,
+                              masterDataTimestamp    : System.currentTimeMillis().toString(),
+                              auth                   : authParams
+                      ]]
+
+        def request = createJsonRpcRequest("getTimetable2017", params)
+        def headers = createStandardHeaders()
+        def entity = new HttpEntity<>(request, headers)
+
+        try {
+            ResponseEntity<String> response = restTemplate.postForEntity(url, entity, String)
+            JsonNode jsonResponse = objectMapper.readTree(response.body)
+
+            if (jsonResponse.has("error")) {
+                throw new WebUntisException("Enhanced Timetable 2017 request failed: ${jsonResponse.get("error").get("message").asText()}")
+            }
+
+            return parseEnhanced2017TimetableWithMasterData(jsonResponse.get("result"), session.masterData)
+
+        } catch (Exception e) {
+            throw new WebUntisException("Error getting enhanced timetable 2017: ${e.message}")
+        }
+    }
+
+    List<Map> getTimetable2017(WebUntisSession session, LocalDate startDate, LocalDate endDate, int elementId, String elementType) {
+        def url = "https://${session.server}/WebUntis/jsonrpc_intern.do?school=${session.school}"
+
+        def authParams = [
+                user      : session.username ?: "defaultUser",
+                otp       : session.appSecret ? createOtp(session.appSecret) : "000000",
+                clientTime: System.currentTimeMillis().toString()
+        ]
+
+        def params = [[
+                              id                 : elementId,
+                              type               : elementType,
+                              startDate          : startDate.format(DateTimeFormatter.ofPattern("yyyy-MM-dd")),
+                              endDate            : endDate.format(DateTimeFormatter.ofPattern("yyyy-MM-dd")),
+                              masterDataTimestamp: System.currentTimeMillis().toString(),
+                              auth               : authParams
+                      ]]
+
+        def request = createJsonRpcRequest("getTimetable2017", params)
+        def headers = createStandardHeaders()
         def entity = new HttpEntity<>(request, headers)
 
         try {
@@ -220,25 +449,183 @@ class WebUntisClient {
                 throw new WebUntisException("Enhanced Timetable request failed: ${jsonResponse.get("error").get("message").asText()}")
             }
 
-            return parseEnhancedTimetableEntries(jsonResponse.get("result"))
+            return parseEnhanced2017TimetableWithMasterData(jsonResponse.get("result"), session.masterData)
 
         } catch (Exception e) {
             throw new WebUntisException("Error getting enhanced timetable: ${e.message}")
         }
     }
 
-    List<Map> getHomework2017(WebUntisSession session, LocalDate startDate, LocalDate endDate, int studentId) {
-        def url = "https://${session.server}/WebUntis/jsonrpc.do?school=${session.school}"
+    // Neue Parser-Methode die Master-Daten aus der Session nutzt
+    private List<Map> parseEnhanced2017TimetableWithMasterData(JsonNode result, Map masterData) {
+        def entries = []
 
-        def options = [
-                id: studentId,
-                type: "STUDENT",
-                startDate: startDate.format(DateTimeFormatter.ofPattern("yyyy-MM-dd")),
-                endDate: endDate.format(DateTimeFormatter.ofPattern("yyyy-MM-dd"))
+        // Timetable-Daten extrahieren (kann direkt ein Array sein oder in einem "timetable" Feld)
+        def timetableData = result.has("timetable") ? result.get("timetable") : result
+
+        timetableData.each { entry ->
+            def timetableEntry = [
+                    id              : entry.get("id").asLong(),
+                    date            : entry.get("date").asInt(),
+                    startTime       : entry.get("startTime").asInt(),
+                    endTime         : entry.get("endTime").asInt(),
+
+                    // Basis-Arrays für aufgelöste Daten
+                    subjects        : [],
+                    teachers        : [],
+                    rooms           : [],
+                    classes         : [],
+
+                    // Original-Arrays (für Vertretungen)
+                    originalSubjects: [],
+                    originalTeachers: [],
+                    originalRooms   : [],
+                    originalClasses : [],
+
+                    // Erweiterte 2017 Informationen
+                    code            : entry.has("code") ? entry.get("code").asText().toUpperCase() : "REGULAR",
+                    activityType    : entry.has("activityType") ? entry.get("activityType").asText() : null,
+                    info            : entry.has("info") ? entry.get("info").asText() : null,
+                    substText       : entry.has("substText") ? entry.get("substText").asText() : null,
+                    lsText          : entry.has("lstext") ? entry.get("lstext").asText() : null,
+                    lsNumber        : entry.has("lsnumber") ? entry.get("lsnumber").asInt() : null,
+                    studentGroup    : entry.has("sg") ? entry.get("sg").asText() : null,
+                    statflags       : entry.has("statflags") ? entry.get("statflags").asText() : null,
+                    bkRemark        : entry.has("bkRemark") ? entry.get("bkRemark").asText() : null,
+                    bkText          : entry.has("bkText") ? entry.get("bkText").asText() : null,
+                    lstype          : entry.has("lstype") ? entry.get("lstype").asText() : null,
+
+                    // Weitere 2017 spezifische Felder
+                    rescheduleInfo  : entry.has("rescheduleInfo") ? entry.get("rescheduleInfo").asText() : null,
+                    periodInfo      : entry.has("periodInfo") ? entry.get("periodInfo").asText() : null,
+                    is2017Format    : true
+            ]
+
+            // Subjects mit Master-Daten auflösen
+            if (entry.has("su")) {
+                entry.get("su").each { su ->
+                    def subjectId = su.get("id").asLong()
+                    def subject = masterData?.subjects?[subjectId] ?: [
+                            id      : subjectId,
+                            name    : su.has("name") ? su.get("name").asText() : "Fach-${subjectId}",
+                            longName: su.has("longname") ? su.get("longname").asText() : "Fach-${subjectId}"
+                    ]
+
+                    timetableEntry.subjects << subject
+
+                    // Original-Fach bei Vertretungen
+                    if (su.has("orgid")) {
+                        def orgSubjectId = su.get("orgid").asLong()
+                        def orgSubject = masterData?.subjects?[orgSubjectId] ?: [
+                                id      : orgSubjectId,
+                                name    : "Fach-${orgSubjectId}",
+                                longName: "Fach-${orgSubjectId}"
+                        ]
+                        timetableEntry.originalSubjects << orgSubject
+                    }
+                }
+            }
+
+            // Teachers mit Master-Daten auflösen
+            if (entry.has("te")) {
+                entry.get("te").each { te ->
+                    def teacherId = te.get("id").asLong()
+                    def teacher = masterData?.teachers?[teacherId] ?: [
+                            id       : teacherId,
+                            name     : te.has("name") ? te.get("name").asText() : "Lehrer-${teacherId}",
+                            firstName: te.has("firstName") ? te.get("firstName").asText() : "",
+                            lastName : te.has("lastName") ? te.get("lastName").asText() : ""
+                    ]
+
+                    timetableEntry.teachers << teacher
+
+                    if (te.has("orgid")) {
+                        def orgTeacherId = te.get("orgid").asLong()
+                        def orgTeacher = masterData?.teachers?[orgTeacherId] ?: [
+                                id       : orgTeacherId,
+                                name     : "Lehrer-${orgTeacherId}",
+                                firstName: "",
+                                lastName : ""
+                        ]
+                        timetableEntry.originalTeachers << orgTeacher
+                    }
+                }
+            }
+
+            // Rooms mit Master-Daten auflösen
+            if (entry.has("ro")) {
+                entry.get("ro").each { ro ->
+                    def roomId = ro.get("id").asLong()
+                    def room = masterData?.rooms?[roomId] ?: [
+                            id      : roomId,
+                            name    : ro.has("name") ? ro.get("name").asText() : "Raum-${roomId}",
+                            longName: ro.has("longname") ? ro.get("longname").asText() : "Raum-${roomId}"
+                    ]
+
+                    timetableEntry.rooms << room
+
+                    if (ro.has("orgid")) {
+                        def orgRoomId = ro.get("orgid").asLong()
+                        def orgRoom = masterData?.rooms?[orgRoomId] ?: [
+                                id      : orgRoomId,
+                                name    : "Raum-${orgRoomId}",
+                                longName: "Raum-${orgRoomId}"
+                        ]
+                        timetableEntry.originalRooms << orgRoom
+                    }
+                }
+            }
+
+            // Classes mit Master-Daten auflösen
+            if (entry.has("kl")) {
+                entry.get("kl").each { kl ->
+                    def classId = kl.get("id").asLong()
+                    def clazz = masterData?.klassen?[classId] ?: [
+                            id      : classId,
+                            name    : kl.has("name") ? kl.get("name").asText() : "Klasse-${classId}",
+                            longName: kl.has("longname") ? kl.get("longname").asText() : "Klasse-${classId}"
+                    ]
+
+                    timetableEntry.classes << clazz
+
+                    if (kl.has("orgid")) {
+                        def orgClassId = kl.get("orgid").asLong()
+                        def orgClass = masterData?.klassen?[orgClassId] ?: [
+                                id      : orgClassId,
+                                name    : "Klasse-${orgClassId}",
+                                longName: "Klasse-${orgClassId}"
+                        ]
+                        timetableEntry.originalClasses << orgClass
+                    }
+                }
+            }
+
+            entries << timetableEntry
+        }
+
+        return entries
+    }
+
+    List<Map> getHomework2017(WebUntisSession session, LocalDate startDate, LocalDate endDate, int studentId) {
+        def url = "https://${session.server}/WebUntis/jsonrpc_intern.do?school=${session.school}"
+
+        def authParams = [
+                user      : session.username ?: "defaultUser",
+                otp       : session.appSecret ? createOtp(session.appSecret) : "000000",
+                clientTime: System.currentTimeMillis().toString()
         ]
 
-        def request = createJsonRpcRequest("getHomeWork2017", options)
-        def headers = createAuthenticatedHeaders(session)
+        def params = [[
+                              id                 : studentId,
+                              type               : "STUDENT",
+                              startDate          : startDate.format(DateTimeFormatter.ofPattern("yyyy-MM-dd")),
+                              endDate            : endDate.format(DateTimeFormatter.ofPattern("yyyy-MM-dd")),
+                              masterDataTimestamp: System.currentTimeMillis().toString(),
+                              auth               : authParams
+                      ]]
+
+        def request = createJsonRpcRequest("getHomeWork2017", params)
+        def headers = createStandardHeaders()
         def entity = new HttpEntity<>(request, headers)
 
         try {
@@ -248,579 +635,10 @@ class WebUntisClient {
             if (jsonResponse.has("error")) {
                 throw new WebUntisException("Homework request failed: ${jsonResponse.get("error").get("message").asText()}")
             }
-
             return parseHomework(jsonResponse.get("result"))
 
         } catch (Exception e) {
             throw new WebUntisException("Error getting homework: ${e.message}")
         }
-    }
-
-    List<Map> getMessagesOfDay2017(WebUntisSession session, LocalDate date) {
-        def url = "https://${session.server}/WebUntis/jsonrpc.do?school=${session.school}"
-
-        def options = [
-                date: date.format(DateTimeFormatter.ofPattern("yyyy-MM-dd"))
-        ]
-
-        def request = createJsonRpcRequest("getMessagesOfDay2017", options)
-        def headers = createAuthenticatedHeaders(session)
-        def entity = new HttpEntity<>(request, headers)
-
-        try {
-            ResponseEntity<String> response = restTemplate.postForEntity(url, entity, String)
-            JsonNode jsonResponse = objectMapper.readTree(response.body)
-
-            if (jsonResponse.has("error")) {
-                throw new WebUntisException("Messages request failed: ${jsonResponse.get("error").get("message").asText()}")
-            }
-
-            return parseMessages(jsonResponse.get("result"))
-
-        } catch (Exception e) {
-            throw new WebUntisException("Error getting messages: ${e.message}")
-        }
-    }
-
-    List<Map> getStudentAbsences2017(WebUntisSession session, LocalDate startDate, LocalDate endDate, boolean includeExcused = true, boolean includeUnexcused = true) {
-        def url = "https://${session.server}/WebUntis/jsonrpc.do?school=${session.school}"
-
-        def options = [
-                startDate: startDate.format(DateTimeFormatter.ofPattern("yyyy-MM-dd")),
-                endDate: endDate.format(DateTimeFormatter.ofPattern("yyyy-MM-dd")),
-                includeExcused: includeExcused,
-                includeUnExcused: includeUnexcused
-        ]
-
-        def request = createJsonRpcRequest("getStudentAbsences2017", options)
-        def headers = createAuthenticatedHeaders(session)
-        def entity = new HttpEntity<>(request, headers)
-
-        try {
-            ResponseEntity<String> response = restTemplate.postForEntity(url, entity, String)
-            JsonNode jsonResponse = objectMapper.readTree(response.body)
-
-            if (jsonResponse.has("error")) {
-                throw new WebUntisException("Absences request failed: ${jsonResponse.get("error").get("message").asText()}")
-            }
-
-            return parseAbsences(jsonResponse.get("result"))
-
-        } catch (Exception e) {
-            throw new WebUntisException("Error getting absences: ${e.message}")
-        }
-    }
-
-    Map getUserData2017(WebUntisSession session) {
-        def url = "https://${session.server}/WebUntis/jsonrpc.do?school=${session.school}"
-
-        def request = createJsonRpcRequest("getUserData2017", [:])
-        def headers = createAuthenticatedHeaders(session)
-        def entity = new HttpEntity<>(request, headers)
-
-        try {
-            ResponseEntity<String> response = restTemplate.postForEntity(url, entity, String)
-            JsonNode jsonResponse = objectMapper.readTree(response.body)
-
-            if (jsonResponse.has("error")) {
-                throw new WebUntisException("UserData request failed: ${jsonResponse.get("error").get("message").asText()}")
-            }
-
-            return parseUserData(jsonResponse.get("result"))
-
-        } catch (Exception e) {
-            throw new WebUntisException("Error getting user data: ${e.message}")
-        }
-    }
-
-    void logout(WebUntisSession session) {
-        try {
-            def url = "https://${session.server}/WebUntis/jsonrpc.do?school=${session.school}"
-            def request = createJsonRpcRequest("logout", [:])
-            def headers = createAuthenticatedHeaders(session)
-            def entity = new HttpEntity<>(request, headers)
-
-            restTemplate.postForEntity(url, entity, String)
-
-        } catch (Exception e) {
-            println "Logout warning: ${e.message}"
-        }
-    }
-
-    private Map createJsonRpcRequest(String method, Map params) {
-        return [
-                id: UUID.randomUUID().toString(),
-                method: method,
-                params: params,
-                jsonrpc: "2.0"
-        ]
-    }
-
-    private HttpHeaders createAuthenticatedHeaders(WebUntisSession session) {
-        def headers = new HttpHeaders().tap {
-            contentType = MediaType.APPLICATION_JSON
-            set("User-Agent", "SpringBoot-Groovy-WebUntis-Client")
-            if (session.cookies) {
-                set("Cookie", session.cookies)
-            }
-        }
-        return headers
-    }
-
-    private List<Map> parseTimetableEntries(JsonNode result) {
-        def entries = []
-
-        result.each { entry ->
-            def timetableEntry = [
-                    id: entry.get("id").asLong(),
-                    date: entry.get("date").asInt(),
-                    startTime: entry.get("startTime").asInt(),
-                    endTime: entry.get("endTime").asInt(),
-                    subjects: [],
-                    teachers: [],
-                    rooms: [],
-                    classes: []
-            ]
-
-            // Subjects
-            if (entry.has("su")) {
-                entry.get("su").each { su ->
-                    timetableEntry.subjects << [
-                            id: su.get("id").asLong(),
-                            name: su.has("name") ? su.get("name").asText() : "",
-                            longName: su.has("longname") ? su.get("longname").asText() : ""
-                    ]
-                }
-            }
-
-            // Teachers
-            if (entry.has("te")) {
-                entry.get("te").each { te ->
-                    timetableEntry.teachers << [
-                            id: te.get("id").asLong(),
-                            name: te.has("name") ? te.get("name").asText() : "",
-                            foreName: te.has("forename") ? te.get("forename").asText() : "",
-                            longName: te.has("longname") ? te.get("longname").asText() : ""
-                    ]
-                }
-            }
-
-            // Rooms
-            if (entry.has("ro")) {
-                entry.get("ro").each { ro ->
-                    timetableEntry.rooms << [
-                            id: ro.get("id").asLong(),
-                            name: ro.has("name") ? ro.get("name").asText() : "",
-                            longName: ro.has("longname") ? ro.get("longname").asText() : ""
-                    ]
-                }
-            }
-
-            // Classes
-            if (entry.has("kl")) {
-                entry.get("kl").each { kl ->
-                    timetableEntry.classes << [
-                            id: kl.get("id").asLong(),
-                            name: kl.has("name") ? kl.get("name").asText() : "",
-                            longName: kl.has("longname") ? kl.get("longname").asText() : ""
-                    ]
-                }
-            }
-
-            entries << timetableEntry
-        }
-
-        return entries
-    }
-
-    private List<Map> parseSubjects(JsonNode result) {
-        def subjects = []
-
-        result.each { subjectNode ->
-            subjects << [
-                    id: subjectNode.get("id").asLong(),
-                    name: subjectNode.get("name").asText(),
-                    longName: subjectNode.has("longName") ? subjectNode.get("longName").asText() : ""
-            ]
-        }
-
-        return subjects
-    }
-
-    private List<Map> parseTeachers(JsonNode result) {
-        def teachers = []
-
-        result.each { teacherNode ->
-            teachers << [
-                    id: teacherNode.get("id").asLong(),
-                    name: teacherNode.get("name").asText(),
-                    foreName: teacherNode.has("foreName") ? teacherNode.get("foreName").asText() : "",
-                    longName: teacherNode.has("longName") ? teacherNode.get("longName").asText() : ""
-            ]
-        }
-
-        return teachers
-    }
-
-    private List<Map> parseRooms(JsonNode result) {
-        def rooms = []
-
-        result.each { roomNode ->
-            rooms << [
-                    id: roomNode.get("id").asLong(),
-                    name: roomNode.get("name").asText(),
-                    longName: roomNode.has("longName") ? roomNode.get("longName").asText() : ""
-            ]
-        }
-
-        return rooms
-    }
-
-    private List<Map> parseClasses(JsonNode result) {
-        def classes = []
-
-        result.each { classNode ->
-            classes << [
-                    id: classNode.get("id").asLong(),
-                    name: classNode.get("name").asText(),
-                    longName: classNode.has("longName") ? classNode.get("longName").asText() : classNode.get("name").asText()
-            ]
-        }
-
-        return classes
-    }
-
-    // ========== Enhanced Parser Methods for 2017 API ==========
-
-    private List<Map> parseAdvancedTimetableEntries(JsonNode result) {
-        def entries = []
-
-        result.each { entry ->
-            def timetableEntry = [
-                    id: entry.get("id").asLong(),
-                    date: entry.get("date").asInt(),
-                    startTime: entry.get("startTime").asInt(),
-                    endTime: entry.get("endTime").asInt(),
-
-                    // Basis-Arrays für IDs
-                    subjects: [],
-                    teachers: [],
-                    rooms: [],
-                    classes: [],
-
-                    // Original-Arrays (für Vertretungen)
-                    originalSubjects: [],
-                    originalTeachers: [],
-                    originalRooms: [],
-                    originalClasses: [],
-
-                    // Erweiterte Informationen
-                    code: entry.has("code") ? entry.get("code").asText().toUpperCase() : "REGULAR",
-                    activityType: entry.has("activityType") ? entry.get("activityType").asText() : null,
-                    info: entry.has("info") ? entry.get("info").asText() : null,
-                    substText: entry.has("substText") ? entry.get("substText").asText() : null,
-                    lsText: entry.has("lstext") ? entry.get("lstext").asText() : null,
-                    lsNumber: entry.has("lsnumber") ? entry.get("lsnumber").asInt() : null,
-                    studentGroup: entry.has("sg") ? entry.get("sg").asText() : null,
-                    statflags: entry.has("statflags") ? entry.get("statflags").asText() : null,
-                    bkRemark: entry.has("bkRemark") ? entry.get("bkRemark").asText() : null,
-                    bkText: entry.has("bkText") ? entry.get("bkText").asText() : null
-            ]
-
-            // Subjects (aktuelle und ursprüngliche)
-            if (entry.has("su")) {
-                entry.get("su").each { su ->
-                    def subjectEntry = [
-                            id: su.get("id").asLong(),
-                            name: su.has("name") ? su.get("name").asText() : "",
-                            longName: su.has("longname") ? su.get("longname").asText() : ""
-                    ]
-                    timetableEntry.subjects << subjectEntry
-
-                    // Original-Fach bei Vertretungen
-                    if (su.has("orgid")) {
-                        timetableEntry.originalSubjects << [
-                                id: su.get("orgid").asLong(),
-                                name: "", // Wird später aufgelöst
-                                longName: ""
-                        ]
-                    }
-                }
-            }
-
-            // Teachers (aktuelle und ursprüngliche)
-            if (entry.has("te")) {
-                entry.get("te").each { te ->
-                    def teacherEntry = [
-                            id: te.get("id").asLong(),
-                            name: te.has("name") ? te.get("name").asText() : "",
-                            foreName: te.has("forename") ? te.get("forename").asText() : "",
-                            longName: te.has("longname") ? te.get("longname").asText() : ""
-                    ]
-                    timetableEntry.teachers << teacherEntry
-
-                    // Original-Lehrer bei Vertretungen
-                    if (te.has("orgid")) {
-                        timetableEntry.originalTeachers << [
-                                id: te.get("orgid").asLong(),
-                                name: "",
-                                foreName: "",
-                                longName: ""
-                        ]
-                    }
-                }
-            }
-
-            // Rooms (aktuelle und ursprüngliche)
-            if (entry.has("ro")) {
-                entry.get("ro").each { ro ->
-                    def roomEntry = [
-                            id: ro.get("id").asLong(),
-                            name: ro.has("name") ? ro.get("name").asText() : "",
-                            longName: ro.has("longname") ? ro.get("longname").asText() : ""
-                    ]
-                    timetableEntry.rooms << roomEntry
-
-                    // Original-Raum bei Vertretungen
-                    if (ro.has("orgid")) {
-                        timetableEntry.originalRooms << [
-                                id: ro.get("orgid").asLong(),
-                                name: "",
-                                longName: ""
-                        ]
-                    }
-                }
-            }
-
-            // Classes (aktuelle und ursprüngliche)
-            if (entry.has("kl")) {
-                entry.get("kl").each { kl ->
-                    def classEntry = [
-                            id: kl.get("id").asLong(),
-                            name: kl.has("name") ? kl.get("name").asText() : "",
-                            longName: kl.has("longname") ? kl.get("longname").asText() : ""
-                    ]
-                    timetableEntry.classes << classEntry
-
-                    // Original-Klasse bei Vertretungen
-                    if (kl.has("orgid")) {
-                        timetableEntry.originalClasses << [
-                                id: kl.get("orgid").asLong(),
-                                name: "",
-                                longName: ""
-                        ]
-                    }
-                }
-            }
-
-            entries << timetableEntry
-        }
-
-        return entries
-    }
-
-    private List<Map> parseEnhancedTimetableEntries(JsonNode result) {
-        def entries = []
-
-        result.each { entry ->
-            def timetableEntry = [
-                    id: entry.get("id").asLong(),
-                    date: entry.get("date").asInt(),
-                    startTime: entry.get("startTime").asInt(),
-                    endTime: entry.get("endTime").asInt(),
-                    subjects: [],
-                    teachers: [],
-                    rooms: [],
-                    classes: [],
-                    // Enhanced 2017 fields
-                    activityType: entry.has("activityType") ? entry.get("activityType").asText() : null,
-                    code: entry.has("code") ? entry.get("code").asText() : null,
-                    info: entry.has("info") ? entry.get("info").asText() : null,
-                    substText: entry.has("substText") ? entry.get("substText").asText() : null,
-                    lstext: entry.has("lstext") ? entry.get("lstext").asText() : null,
-                    lsnumber: entry.has("lsnumber") ? entry.get("lsnumber").asInt() : null,
-                    statflags: entry.has("statflags") ? entry.get("statflags").asText() : null,
-                    sg: entry.has("sg") ? entry.get("sg").asText() : null,
-                    bkRemark: entry.has("bkRemark") ? entry.get("bkRemark").asText() : null,
-                    bkText: entry.has("bkText") ? entry.get("bkText").asText() : null
-            ]
-
-            // Parse subjects, teachers, rooms, classes (same as standard method)
-            if (entry.has("su")) {
-                entry.get("su").each { su ->
-                    timetableEntry.subjects << [
-                            id: su.get("id").asLong(),
-                            name: su.has("name") ? su.get("name").asText() : "",
-                            longName: su.has("longname") ? su.get("longname").asText() : ""
-                    ]
-                }
-            }
-
-            if (entry.has("te")) {
-                entry.get("te").each { te ->
-                    timetableEntry.teachers << [
-                            id: te.get("id").asLong(),
-                            name: te.has("name") ? te.get("name").asText() : "",
-                            foreName: te.has("forename") ? te.get("forename").asText() : "",
-                            longName: te.has("longname") ? te.get("longname").asText() : ""
-                    ]
-                }
-            }
-
-            if (entry.has("ro")) {
-                entry.get("ro").each { ro ->
-                    timetableEntry.rooms << [
-                            id: ro.get("id").asLong(),
-                            name: ro.has("name") ? ro.get("name").asText() : "",
-                            longName: ro.has("longname") ? ro.get("longname").asText() : ""
-                    ]
-                }
-            }
-
-            if (entry.has("kl")) {
-                entry.get("kl").each { kl ->
-                    timetableEntry.classes << [
-                            id: kl.get("id").asLong(),
-                            name: kl.has("name") ? kl.get("name").asText() : "",
-                            longName: kl.has("longname") ? kl.get("longname").asText() : ""
-                    ]
-                }
-            }
-
-            entries << timetableEntry
-        }
-
-        return entries
-    }
-
-    private List<Map> parseHomework(JsonNode result) {
-        def homework = []
-
-        result.each { hw ->
-            homework << [
-                    id: hw.get("id").asLong(),
-                    lessonId: hw.has("lessonId") ? hw.get("lessonId").asLong() : null,
-                    date: hw.has("date") ? hw.get("date").asInt() : null,
-                    dueDate: hw.has("dueDate") ? hw.get("dueDate").asInt() : null,
-                    text: hw.has("text") ? hw.get("text").asText() : "",
-                    remark: hw.has("remark") ? hw.get("remark").asText() : "",
-                    completed: hw.has("completed") ? hw.get("completed").asBoolean() : false,
-                    attachments: hw.has("attachments") ? parseAttachments(hw.get("attachments")) : []
-            ]
-        }
-
-        return homework
-    }
-
-    private List<Map> parseAttachments(JsonNode attachments) {
-        def attachmentList = []
-
-        attachments.each { attachment ->
-            attachmentList << [
-                    id: attachment.get("id").asLong(),
-                    name: attachment.has("name") ? attachment.get("name").asText() : "",
-                    url: attachment.has("url") ? attachment.get("url").asText() : ""
-            ]
-        }
-
-        return attachmentList
-    }
-
-    private List<Map> parseMessages(JsonNode result) {
-        def messages = []
-
-        result.each { msg ->
-            messages << [
-                    id: msg.get("id").asLong(),
-                    subject: msg.has("subject") ? msg.get("subject").asText() : "",
-                    text: msg.has("text") ? msg.get("text").asText() : "",
-                    isStudentMessage: msg.has("isStudentMessage") ? msg.get("isStudentMessage").asBoolean() : false,
-                    attachments: msg.has("attachments") ? parseAttachments(msg.get("attachments")) : []
-            ]
-        }
-
-        return messages
-    }
-
-    private List<Map> parseAbsences(JsonNode result) {
-        def absences = []
-
-        result.each { absence ->
-            absences << [
-                    id: absence.get("id").asLong(),
-                    startDate: absence.has("startDate") ? absence.get("startDate").asInt() : null,
-                    endDate: absence.has("endDate") ? absence.get("endDate").asInt() : null,
-                    startTime: absence.has("startTime") ? absence.get("startTime").asInt() : null,
-                    endTime: absence.has("endTime") ? absence.get("endTime").asInt() : null,
-                    createDate: absence.has("createDate") ? absence.get("createDate").asLong() : null,
-                    lastUpdate: absence.has("lastUpdate") ? absence.get("lastUpdate").asLong() : null,
-                    reasonId: absence.has("reasonId") ? absence.get("reasonId").asInt() : null,
-                    text: absence.has("text") ? absence.get("text").asText() : "",
-                    excuse: absence.has("excuse") ? parseExcuse(absence.get("excuse")) : null,
-                    studentId: absence.has("studentId") ? absence.get("studentId").asLong() : null,
-                    excused: absence.has("excused") ? absence.get("excused").asBoolean() : false,
-                    interrupted: absence.has("interrupted") ? absence.get("interrupted").asBoolean() : false
-            ]
-        }
-
-        return absences
-    }
-
-    private Map parseExcuse(JsonNode excuse) {
-        return [
-                id: excuse.get("id").asLong(),
-                text: excuse.has("text") ? excuse.get("text").asText() : "",
-                excuseDate: excuse.has("excuseDate") ? excuse.get("excuseDate").asLong() : null,
-                excuseStatus: excuse.has("excuseStatus") ? excuse.get("excuseStatus").asText() : ""
-        ]
-    }
-
-    private Map parseUserData(JsonNode result) {
-        return [
-                masterData: result.has("masterData") ? parseMasterData(result.get("masterData")) : [:],
-                userData: result.has("userData") ? parseUserDataDetails(result.get("userData")) : [:],
-                settings: result.has("settings") ? parseSettings(result.get("settings")) : [:],
-                messengerSettings: result.has("messengerSettings") ? parseMessengerSettings(result.get("messengerSettings")) : [:]
-        ]
-    }
-
-    private Map parseMasterData(JsonNode masterData) {
-        def data = [:]
-
-        if (masterData.has("timeUnits")) {
-            data.timeUnits = []
-            masterData.get("timeUnits").each { tu ->
-                data.timeUnits << [
-                        name: tu.has("name") ? tu.get("name").asText() : "",
-                        startTime: tu.has("startTime") ? tu.get("startTime").asInt() : null,
-                        endTime: tu.has("endTime") ? tu.get("endTime").asInt() : null
-                ]
-            }
-        }
-
-        return data
-    }
-
-    private Map parseUserDataDetails(JsonNode userData) {
-        return [
-                elemId: userData.has("elemId") ? userData.get("elemId").asLong() : null,
-                elemType: userData.has("elemType") ? userData.get("elemType").asInt() : null,
-                displayName: userData.has("displayName") ? userData.get("displayName").asText() : "",
-                schoolName: userData.has("schoolName") ? userData.get("schoolName").asText() : ""
-        ]
-    }
-
-    private Map parseSettings(JsonNode settings) {
-        return [
-                showAbsenceReason: settings.has("showAbsenceReason") ? settings.get("showAbsenceReason").asBoolean() : false,
-                showAbsenceText: settings.has("showAbsenceText") ? settings.get("showAbsenceText").asBoolean() : false
-        ]
-    }
-
-    private Map parseMessengerSettings(JsonNode messengerSettings) {
-        return [
-                messengerEnabled: messengerSettings.has("messengerEnabled") ? messengerSettings.get("messengerEnabled").asBoolean() : false,
-                serverUrl: messengerSettings.has("serverUrl") ? messengerSettings.get("serverUrl").asText() : ""
-        ]
     }
 }

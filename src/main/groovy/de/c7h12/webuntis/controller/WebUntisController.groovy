@@ -117,7 +117,42 @@ class WebUntisController {
         }
     }
 
-    // ========== Enhanced 2017 API Endpoints (Optional) ==========
+    // ========== Enhanced 2017 API Endpoints (Alle benötigen appSecret) ==========
+
+    @PostMapping("/v2017/timetable/enhanced")
+    ResponseEntity<?> getTimetableEnhanced2017(@RequestBody Map request) {
+        try {
+            def startDate = LocalDate.parse(request.startDate as String)
+            def endDate = LocalDate.parse(request.endDate as String)
+            def elementType = request.elementType as String ?: "STUDENT"
+            def appSecret = request.appSecret as String
+
+            if (!appSecret) {
+                return ResponseEntity.badRequest()
+                        .body([error: "appSecret ist für 2017 API Methoden erforderlich"])
+            }
+
+            def timetable = webUntisService.getTimetable2017Enhanced(
+                    request.school as String,
+                    request.username as String,
+                    request.password as String,
+                    request.server as String,
+                    startDate,
+                    endDate,
+                    elementType,
+                    appSecret
+            )
+            return ResponseEntity.ok([
+                    status: "success",
+                    format: "2017-enhanced",
+                    dataCount: timetable.size(),
+                    data: timetable
+            ])
+        } catch (Exception e) {
+            return ResponseEntity.badRequest()
+                    .body([error: "Fehler beim Abrufen des erweiterten 2017 Stundenplans: ${e.message}"])
+        }
+    }
 
     @PostMapping("/v2017/timetable")
     ResponseEntity<?> getTimetableEnhanced(@RequestBody Map request) {
@@ -125,6 +160,12 @@ class WebUntisController {
             def startDate = LocalDate.parse(request.startDate as String)
             def endDate = LocalDate.parse(request.endDate as String)
             def elementType = request.elementType as String ?: "STUDENT"
+            def appSecret = request.appSecret as String
+
+            if (!appSecret) {
+                return ResponseEntity.badRequest()
+                        .body([error: "appSecret ist für 2017 API Methoden erforderlich"])
+            }
 
             def timetable = webUntisService.getTimetable2017(
                     request.school as String,
@@ -133,9 +174,15 @@ class WebUntisController {
                     request.server as String,
                     startDate,
                     endDate,
-                    elementType
+                    elementType,
+                    appSecret
             )
-            return ResponseEntity.ok(timetable)
+            return ResponseEntity.ok([
+                    status: "success",
+                    format: "2017-standard",
+                    dataCount: timetable.size(),
+                    data: timetable
+            ])
         } catch (Exception e) {
             return ResponseEntity.badRequest()
                     .body([error: "Fehler beim Abrufen des erweiterten Stundenplans: ${e.message}"])
@@ -147,6 +194,12 @@ class WebUntisController {
         try {
             def startDate = LocalDate.parse(request.startDate as String)
             def endDate = LocalDate.parse(request.endDate as String)
+            def appSecret = request.appSecret as String
+
+            if (!appSecret) {
+                return ResponseEntity.badRequest()
+                        .body([error: "appSecret ist für 2017 API Methoden erforderlich"])
+            }
 
             def homework = webUntisService.getHomework2017(
                     request.school as String,
@@ -154,7 +207,8 @@ class WebUntisController {
                     request.password as String,
                     request.server as String,
                     startDate,
-                    endDate
+                    endDate,
+                    appSecret
             )
             return ResponseEntity.ok(homework)
         } catch (Exception e) {
@@ -167,13 +221,20 @@ class WebUntisController {
     ResponseEntity<?> getMessages(@RequestBody Map request) {
         try {
             def date = request.date ? LocalDate.parse(request.date as String) : LocalDate.now()
+            def appSecret = request.appSecret as String
+
+            if (!appSecret) {
+                return ResponseEntity.badRequest()
+                        .body([error: "appSecret ist für 2017 API Methoden erforderlich"])
+            }
 
             def messages = webUntisService.getMessagesOfDay2017(
                     request.school as String,
                     request.username as String,
                     request.password as String,
                     request.server as String,
-                    date
+                    date,
+                    appSecret
             )
             return ResponseEntity.ok(messages)
         } catch (Exception e) {
@@ -189,6 +250,12 @@ class WebUntisController {
             def endDate = LocalDate.parse(request.endDate as String)
             def includeExcused = request.includeExcused != null ? request.includeExcused as boolean : true
             def includeUnexcused = request.includeUnexcused != null ? request.includeUnexcused as boolean : true
+            def appSecret = request.appSecret as String
+
+            if (!appSecret) {
+                return ResponseEntity.badRequest()
+                        .body([error: "appSecret ist für 2017 API Methoden erforderlich"])
+            }
 
             def absences = webUntisService.getStudentAbsences2017(
                     request.school as String,
@@ -198,7 +265,8 @@ class WebUntisController {
                     startDate,
                     endDate,
                     includeExcused,
-                    includeUnexcused
+                    includeUnexcused,
+                    appSecret
             )
             return ResponseEntity.ok(absences)
         } catch (Exception e) {
@@ -210,11 +278,19 @@ class WebUntisController {
     @PostMapping("/v2017/userdata")
     ResponseEntity<?> getUserData(@RequestBody Map request) {
         try {
+            def appSecret = request.appSecret as String
+
+            if (!appSecret) {
+                return ResponseEntity.badRequest()
+                        .body([error: "appSecret ist für 2017 API Methoden erforderlich"])
+            }
+
             def userData = webUntisService.getUserData2017(
                     request.school as String,
                     request.username as String,
                     request.password as String,
-                    request.server as String
+                    request.server as String,
+                    appSecret
             )
             return ResponseEntity.ok(userData)
         } catch (Exception e) {

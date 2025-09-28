@@ -85,112 +85,6 @@ class WebUntisService {
         }
     }
 
-    // Sichere Methoden die bei fehlenden Berechtigungen leere Listen zurückgeben
-    private List<Map> safeGetSubjects(WebUntisSession session) {
-        try {
-            return webUntisClient.getSubjects(session)
-        } catch (Exception e) {
-            println "INFO: Cannot load subjects (no permission): ${e.message}"
-            return []
-        }
-    }
-
-    private List<Map> safeGetTeachers(WebUntisSession session) {
-        try {
-            return webUntisClient.getTeachers(session)
-        } catch (Exception e) {
-            println "INFO: Cannot load teachers (no permission): ${e.message}"
-            return []
-        }
-    }
-
-    private List<Map> safeGetRooms(WebUntisSession session) {
-        try {
-            return webUntisClient.getRooms(session)
-        } catch (Exception e) {
-            println "INFO: Cannot load rooms (no permission): ${e.message}"
-            return []
-        }
-    }
-
-    private List<Map> safeGetClasses(WebUntisSession session) {
-        try {
-            return webUntisClient.getClasses(session)
-        } catch (Exception e) {
-            println "INFO: Cannot load classes (no permission): ${e.message}"
-            return []
-        }
-    }
-
-    // Hilfsmethode zum Auflösen der IDs zu Namen
-    private List<Map> resolveTimetableNames(List<Map> timetable, List<Map> subjects, List<Map> teachers, List<Map> rooms, List<Map> classes) {
-        def subjectMap = subjects.collectEntries { [(it.id): it] }
-        def teacherMap = teachers.collectEntries { [(it.id): it] }
-        def roomMap = rooms.collectEntries { [(it.id): it] }
-        def classMap = classes.collectEntries { [(it.id): it] }
-
-        return timetable.collect { entry ->
-            // Datum und Zeiten formatieren
-            def dateFormatted = formatWebUntisDate(entry.date as Integer)
-            def startTimeFormatted = formatWebUntisTime(entry.startTime as Integer)
-            def endTimeFormatted = formatWebUntisTime(entry.endTime as Integer)
-            def duration = calculateDuration(entry.startTime as Integer, entry.endTime as Integer)
-
-            // Subjects auflösen
-            entry.subjects = entry.subjects.collect { su ->
-                def subject = subjectMap[su.id]
-                return [
-                        id: su.id,
-                        name: subject?.name ?: "Unbekannt",
-                        longName: subject?.longName ?: subject?.name ?: "Unbekannt"
-                ]
-            }
-
-            // Teachers auflösen (falls verfügbar)
-            entry.teachers = entry.teachers.collect { te ->
-                def teacher = teacherMap[te.id]
-                return [
-                        id: te.id,
-                        name: teacher?.name ?: "Lehrer-${te.id}",
-                        foreName: teacher?.foreName ?: "",
-                        longName: teacher?.longName ?: teacher?.name ?: "Lehrer-${te.id}"
-                ]
-            }
-
-            // Rooms auflösen (falls verfügbar)
-            entry.rooms = entry.rooms.collect { ro ->
-                def room = roomMap[ro.id]
-                return [
-                        id: ro.id,
-                        name: room?.name ?: "Raum-${ro.id}",
-                        longName: room?.longName ?: room?.name ?: "Raum-${ro.id}"
-                ]
-            }
-
-            // Classes auflösen (falls verfügbar)
-            entry.classes = entry.classes.collect { kl ->
-                def clazz = classMap[kl.id]
-                return [
-                        id: kl.id,
-                        name: clazz?.name ?: "Klasse-${kl.id}",
-                        longName: clazz?.longName ?: clazz?.name ?: "Klasse-${kl.id}"
-                ]
-            }
-
-            // Formatierte Zeiten hinzufügen (behalte auch die Originalwerte)
-            entry.dateFormatted = dateFormatted
-            entry.startTimeFormatted = startTimeFormatted
-            entry.endTimeFormatted = endTimeFormatted
-            entry.timeRange = "${startTimeFormatted} - ${endTimeFormatted}"
-            entry.durationMinutes = duration
-            entry.weekday = getWeekdayName(dateFormatted)
-
-            return entry
-        }
-    }
-
-
-
     List<Map> getSubjects(String school, String username, String password, String server) {
         WebUntisSession session = null
         try {
@@ -232,18 +126,124 @@ class WebUntisService {
 
     // ========== Enhanced 2017 API Methods (Optional) ==========
 
-    List<Map> getTimetable2017(String school, String username, String password, String server, LocalDate startDate, LocalDate endDate, String elementType = "STUDENT") {
+    List<Map> getTimetable2017Enhanced(String school, String username, String password, String server, LocalDate startDate, LocalDate endDate, String elementType = "STUDENT", String appSecret = null) {
         WebUntisSession session = null
         try {
-            session = webUntisClient.authenticate(school, username, password, server)
+            if (appSecret) {
+                // Mit App Secret: getUserData2017 lädt automatisch Master-Daten
+                session = webUntisClient.authenticateWithSecret(school, username, appSecret, server)
 
-            return webUntisClient.getTimetable2017(session, startDate, endDate, session.personId, elementType)
+                def timetable = webUntisClient.getTimetable2017Enhanced(session, startDate, endDate, session.personId, elementType)
+
+                // Zusätzliche Formatierung mit den bereits geladenen Master-Daten
+                return formatTimetableWithTimeInfo(timetable)
+            } else {
+                // Fallback auf Standard-Authentifizierung ohne Master-Daten
+                session = webUntisClient.authenticate(school, username, password, server)
+
+                def timetable = webUntisClient.getTimetable2017(session, startDate, endDate, session.personId, elementType)
+
+                return formatTimetableWithTimeInfo(timetable)
+            }
 
         } finally {
             if (session) {
                 webUntisClient.logout(session)
             }
         }
+    }
+
+    List<Map> getTimetable2017(String school, String username, String password, String server, LocalDate startDate, LocalDate endDate, String elementType = "STUDENT") {
+        WebUntisSession session = null
+        try {
+            session = webUntisClient.authenticate(school, username, password, server)
+
+            def timetable = webUntisClient.getTimetable2017(session, startDate, endDate, session.personId, elementType)
+
+            return formatTimetableWithTimeInfo(timetable)
+
+        } finally {
+            if (session) {
+                webUntisClient.logout(session)
+            }
+        }
+    }
+
+    // Formatierung für 2017 API mit Zeitinfos
+    private List<Map> formatTimetableWithTimeInfo(List<Map> timetable) {
+        return timetable.collect { entry ->
+            // Datum und Zeiten formatieren
+            def dateFormatted = formatWebUntisDate(entry.date as Integer)
+            def startTimeFormatted = formatWebUntisTime(entry.startTime as Integer)
+            def endTimeFormatted = formatWebUntisTime(entry.endTime as Integer)
+            def duration = calculateDuration(entry.startTime as Integer, entry.endTime as Integer)
+
+            // Lesson Code interpretieren
+            def lessonStatus = interpretLessonCode(entry.code as String)
+
+            // Formatierte Zeiten hinzufügen
+            entry.dateFormatted = dateFormatted
+            entry.startTimeFormatted = startTimeFormatted
+            entry.endTimeFormatted = endTimeFormatted
+            entry.timeRange = "${startTimeFormatted} - ${endTimeFormatted}"
+            entry.durationMinutes = duration
+            entry.weekday = getWeekdayName(dateFormatted)
+            entry.lessonStatus = lessonStatus
+
+            // Vertretungsinfo generieren falls Original-Daten vorhanden
+            entry.substitutionInfo = generate2017SubstitutionInfo(entry)
+
+            return entry
+        }
+    }
+
+    // Erweiterte Vertretungsinfo-Generierung für 2017 API
+    private String generate2017SubstitutionInfo(Map entry) {
+        def infoTexts = []
+
+        // Vertretungslehrer
+        if (!entry.originalTeachers.isEmpty() && !entry.teachers.isEmpty()) {
+            def originalTeacher = entry.originalTeachers[0]
+            def currentTeacher = entry.teachers[0]
+            if (originalTeacher.id != currentTeacher.id) {
+                def originalName = originalTeacher.firstName ? "${originalTeacher.firstName} ${originalTeacher.lastName}".trim() : originalTeacher.name
+                def currentName = currentTeacher.firstName ? "${currentTeacher.firstName} ${currentTeacher.lastName}".trim() : currentTeacher.name
+                infoTexts << "Lehrer: ${originalName} → ${currentName}"
+            }
+        }
+
+        // Raumänderung
+        if (!entry.originalRooms.isEmpty() && !entry.rooms.isEmpty()) {
+            def originalRoom = entry.originalRooms[0]
+            def currentRoom = entry.rooms[0]
+            if (originalRoom.id != currentRoom.id) {
+                infoTexts << "Raum: ${originalRoom.name} → ${currentRoom.name}"
+            }
+        }
+
+        // Fachänderung
+        if (!entry.originalSubjects.isEmpty() && !entry.subjects.isEmpty()) {
+            def originalSubject = entry.originalSubjects[0]
+            def currentSubject = entry.subjects[0]
+            if (originalSubject.id != currentSubject.id) {
+                infoTexts << "Fach: ${originalSubject.name} → ${currentSubject.name}"
+            }
+        }
+
+        // Zusätzliche 2017 API Infos
+        if (entry.substText) {
+            infoTexts << "Vertretung: ${entry.substText}"
+        }
+
+        if (entry.info) {
+            infoTexts << "Info: ${entry.info}"
+        }
+
+        if (entry.lsText) {
+            infoTexts << "Unterricht: ${entry.lsText}"
+        }
+
+        return infoTexts.join(" | ") ?: null
     }
 
     List<Map> getHomework2017(String school, String username, String password, String server, LocalDate startDate, LocalDate endDate) {
@@ -299,6 +299,43 @@ class WebUntisService {
             if (session) {
                 webUntisClient.logout(session)
             }
+        }
+    }
+
+    // Sichere Methoden die bei fehlenden Berechtigungen leere Listen zurückgeben
+    private List<Map> safeGetSubjects(WebUntisSession session) {
+        try {
+            return webUntisClient.getSubjects(session)
+        } catch (Exception e) {
+            println "INFO: Cannot load subjects (no permission): ${e.message}"
+            return []
+        }
+    }
+
+    private List<Map> safeGetTeachers(WebUntisSession session) {
+        try {
+            return webUntisClient.getTeachers(session)
+        } catch (Exception e) {
+            println "INFO: Cannot load teachers (no permission): ${e.message}"
+            return []
+        }
+    }
+
+    private List<Map> safeGetRooms(WebUntisSession session) {
+        try {
+            return webUntisClient.getRooms(session)
+        } catch (Exception e) {
+            println "INFO: Cannot load rooms (no permission): ${e.message}"
+            return []
+        }
+    }
+
+    private List<Map> safeGetClasses(WebUntisSession session) {
+        try {
+            return webUntisClient.getClasses(session)
+        } catch (Exception e) {
+            println "INFO: Cannot load classes (no permission): ${e.message}"
+            return []
         }
     }
 
