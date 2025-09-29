@@ -779,18 +779,37 @@ class WebUntisClient {
     // ========== 2017 API Parser mit Master-Daten ==========
 
     // Neue Parser-Methode die Master-Daten aus der Session nutzt
+    // In WebUntisClient.groovy - parseEnhanced2017TimetableWithMasterData ersetzen:
+
     private List<Map> parseEnhanced2017TimetableWithMasterData(JsonNode result, Map masterData) {
         def entries = []
 
         // Timetable-Daten extrahieren (kann direkt ein Array sein oder in einem "timetable" Feld)
         def timetableData = result.has("timetable") ? result.get("timetable") : result
 
+        // WICHTIG: Prüfen ob timetableData null oder leer ist
+        if (timetableData == null || timetableData.isNull() || timetableData.size() == 0) {
+            println "DEBUG: No timetable data found in response"
+            return entries
+        }
+
         timetableData.each { entry ->
+            // NULL-Check für entry
+            if (entry == null || entry.isNull()) {
+                return // continue zur nächsten Iteration
+            }
+
+            // NULL-Check für id - wenn keine ID, Entry überspringen
+            if (!entry.has("id") || entry.get("id").isNull()) {
+                println "WARN: Skipping timetable entry without ID"
+                return // continue
+            }
+
             def timetableEntry = [
                     id              : entry.get("id").asLong(),
-                    date            : entry.get("date").asInt(),
-                    startTime       : entry.get("startTime").asInt(),
-                    endTime         : entry.get("endTime").asInt(),
+                    date            : entry.has("date") && !entry.get("date").isNull() ? entry.get("date").asInt() : 0,
+                    startTime       : entry.has("startTime") && !entry.get("startTime").isNull() ? entry.get("startTime").asInt() : 0,
+                    endTime         : entry.has("endTime") && !entry.get("endTime").isNull() ? entry.get("endTime").asInt() : 0,
 
                     // Basis-Arrays für aufgelöste Daten
                     subjects        : [],
@@ -805,119 +824,127 @@ class WebUntisClient {
                     originalClasses : [],
 
                     // Erweiterte 2017 Informationen
-                    code            : entry.has("code") ? entry.get("code").asText().toUpperCase() : "REGULAR",
-                    activityType    : entry.has("activityType") ? entry.get("activityType").asText() : null,
-                    info            : entry.has("info") ? entry.get("info").asText() : null,
-                    substText       : entry.has("substText") ? entry.get("substText").asText() : null,
-                    lsText          : entry.has("lstext") ? entry.get("lstext").asText() : null,
-                    lsNumber        : entry.has("lsnumber") ? entry.get("lsnumber").asInt() : null,
-                    studentGroup    : entry.has("sg") ? entry.get("sg").asText() : null,
-                    statflags       : entry.has("statflags") ? entry.get("statflags").asText() : null,
-                    bkRemark        : entry.has("bkRemark") ? entry.get("bkRemark").asText() : null,
-                    bkText          : entry.has("bkText") ? entry.get("bkText").asText() : null,
-                    lstype          : entry.has("lstype") ? entry.get("lstype").asText() : null,
+                    code            : entry.has("code") && !entry.get("code").isNull() ? entry.get("code").asText().toUpperCase() : "REGULAR",
+                    activityType    : entry.has("activityType") && !entry.get("activityType").isNull() ? entry.get("activityType").asText() : null,
+                    info            : entry.has("info") && !entry.get("info").isNull() ? entry.get("info").asText() : null,
+                    substText       : entry.has("substText") && !entry.get("substText").isNull() ? entry.get("substText").asText() : null,
+                    lsText          : entry.has("lstext") && !entry.get("lstext").isNull() ? entry.get("lstext").asText() : null,
+                    lsNumber        : entry.has("lsnumber") && !entry.get("lsnumber").isNull() ? entry.get("lsnumber").asInt() : null,
+                    studentGroup    : entry.has("sg") && !entry.get("sg").isNull() ? entry.get("sg").asText() : null,
+                    statflags       : entry.has("statflags") && !entry.get("statflags").isNull() ? entry.get("statflags").asText() : null,
+                    bkRemark        : entry.has("bkRemark") && !entry.get("bkRemark").isNull() ? entry.get("bkRemark").asText() : null,
+                    bkText          : entry.has("bkText") && !entry.get("bkText").isNull() ? entry.get("bkText").asText() : null,
+                    lstype          : entry.has("lstype") && !entry.get("lstype").isNull() ? entry.get("lstype").asText() : null,
 
                     // Weitere 2017 spezifische Felder
-                    rescheduleInfo  : entry.has("rescheduleInfo") ? entry.get("rescheduleInfo").asText() : null,
-                    periodInfo      : entry.has("periodInfo") ? entry.get("periodInfo").asText() : null,
+                    rescheduleInfo  : entry.has("rescheduleInfo") && !entry.get("rescheduleInfo").isNull() ? entry.get("rescheduleInfo").asText() : null,
+                    periodInfo      : entry.has("periodInfo") && !entry.get("periodInfo").isNull() ? entry.get("periodInfo").asText() : null,
                     is2017Format    : true
             ]
 
             // Subjects mit Master-Daten auflösen
-            if (entry.has("su")) {
+            if (entry.has("su") && !entry.get("su").isNull()) {
                 entry.get("su").each { su ->
-                    def subjectId = su.get("id").asLong()
-                    def subject = masterData?.subjects?[subjectId] ?: [
-                            id      : subjectId,
-                            name    : su.has("name") ? su.get("name").asText() : "Fach-${subjectId}",
-                            longName: su.has("longname") ? su.get("longname").asText() : "Fach-${subjectId}"
-                    ]
-
-                    timetableEntry.subjects << subject
-
-                    // Original-Fach bei Vertretungen
-                    if (su.has("orgid")) {
-                        def orgSubjectId = su.get("orgid").asLong()
-                        def orgSubject = masterData?.subjects?[orgSubjectId] ?: [
-                                id      : orgSubjectId,
-                                name    : "Fach-${orgSubjectId}",
-                                longName: "Fach-${orgSubjectId}"
+                    if (su != null && !su.isNull() && su.has("id") && !su.get("id").isNull()) {
+                        def subjectId = su.get("id").asLong()
+                        def subject = masterData?.subjects?[subjectId] ?: [
+                                id      : subjectId,
+                                name    : su.has("name") && !su.get("name").isNull() ? su.get("name").asText() : "Fach-${subjectId}",
+                                longName: su.has("longname") && !su.get("longname").isNull() ? su.get("longname").asText() : "Fach-${subjectId}"
                         ]
-                        timetableEntry.originalSubjects << orgSubject
+
+                        timetableEntry.subjects << subject
+
+                        // Original-Fach bei Vertretungen
+                        if (su.has("orgid") && !su.get("orgid").isNull()) {
+                            def orgSubjectId = su.get("orgid").asLong()
+                            def orgSubject = masterData?.subjects?[orgSubjectId] ?: [
+                                    id      : orgSubjectId,
+                                    name    : "Fach-${orgSubjectId}",
+                                    longName: "Fach-${orgSubjectId}"
+                            ]
+                            timetableEntry.originalSubjects << orgSubject
+                        }
                     }
                 }
             }
 
             // Teachers mit Master-Daten auflösen
-            if (entry.has("te")) {
+            if (entry.has("te") && !entry.get("te").isNull()) {
                 entry.get("te").each { te ->
-                    def teacherId = te.get("id").asLong()
-                    def teacher = masterData?.teachers?[teacherId] ?: [
-                            id       : teacherId,
-                            name     : te.has("name") ? te.get("name").asText() : "Lehrer-${teacherId}",
-                            firstName: te.has("firstName") ? te.get("firstName").asText() : "",
-                            lastName : te.has("lastName") ? te.get("lastName").asText() : ""
-                    ]
-
-                    timetableEntry.teachers << teacher
-
-                    if (te.has("orgid")) {
-                        def orgTeacherId = te.get("orgid").asLong()
-                        def orgTeacher = masterData?.teachers?[orgTeacherId] ?: [
-                                id       : orgTeacherId,
-                                name     : "Lehrer-${orgTeacherId}",
-                                firstName: "",
-                                lastName : ""
+                    if (te != null && !te.isNull() && te.has("id") && !te.get("id").isNull()) {
+                        def teacherId = te.get("id").asLong()
+                        def teacher = masterData?.teachers?[teacherId] ?: [
+                                id       : teacherId,
+                                name     : te.has("name") && !te.get("name").isNull() ? te.get("name").asText() : "Lehrer-${teacherId}",
+                                firstName: te.has("firstName") && !te.get("firstName").isNull() ? te.get("firstName").asText() : "",
+                                lastName : te.has("lastName") && !te.get("lastName").isNull() ? te.get("lastName").asText() : ""
                         ]
-                        timetableEntry.originalTeachers << orgTeacher
+
+                        timetableEntry.teachers << teacher
+
+                        if (te.has("orgid") && !te.get("orgid").isNull()) {
+                            def orgTeacherId = te.get("orgid").asLong()
+                            def orgTeacher = masterData?.teachers?[orgTeacherId] ?: [
+                                    id       : orgTeacherId,
+                                    name     : "Lehrer-${orgTeacherId}",
+                                    firstName: "",
+                                    lastName : ""
+                            ]
+                            timetableEntry.originalTeachers << orgTeacher
+                        }
                     }
                 }
             }
 
             // Rooms mit Master-Daten auflösen
-            if (entry.has("ro")) {
+            if (entry.has("ro") && !entry.get("ro").isNull()) {
                 entry.get("ro").each { ro ->
-                    def roomId = ro.get("id").asLong()
-                    def room = masterData?.rooms?[roomId] ?: [
-                            id      : roomId,
-                            name    : ro.has("name") ? ro.get("name").asText() : "Raum-${roomId}",
-                            longName: ro.has("longname") ? ro.get("longname").asText() : "Raum-${roomId}"
-                    ]
-
-                    timetableEntry.rooms << room
-
-                    if (ro.has("orgid")) {
-                        def orgRoomId = ro.get("orgid").asLong()
-                        def orgRoom = masterData?.rooms?[orgRoomId] ?: [
-                                id      : orgRoomId,
-                                name    : "Raum-${orgRoomId}",
-                                longName: "Raum-${orgRoomId}"
+                    if (ro != null && !ro.isNull() && ro.has("id") && !ro.get("id").isNull()) {
+                        def roomId = ro.get("id").asLong()
+                        def room = masterData?.rooms?[roomId] ?: [
+                                id      : roomId,
+                                name    : ro.has("name") && !ro.get("name").isNull() ? ro.get("name").asText() : "Raum-${roomId}",
+                                longName: ro.has("longname") && !ro.get("longname").isNull() ? ro.get("longname").asText() : "Raum-${roomId}"
                         ]
-                        timetableEntry.originalRooms << orgRoom
+
+                        timetableEntry.rooms << room
+
+                        if (ro.has("orgid") && !ro.get("orgid").isNull()) {
+                            def orgRoomId = ro.get("orgid").asLong()
+                            def orgRoom = masterData?.rooms?[orgRoomId] ?: [
+                                    id      : orgRoomId,
+                                    name    : "Raum-${orgRoomId}",
+                                    longName: "Raum-${orgRoomId}"
+                            ]
+                            timetableEntry.originalRooms << orgRoom
+                        }
                     }
                 }
             }
 
             // Classes mit Master-Daten auflösen
-            if (entry.has("kl")) {
+            if (entry.has("kl") && !entry.get("kl").isNull()) {
                 entry.get("kl").each { kl ->
-                    def classId = kl.get("id").asLong()
-                    def clazz = masterData?.klassen?[classId] ?: [
-                            id      : classId,
-                            name    : kl.has("name") ? kl.get("name").asText() : "Klasse-${classId}",
-                            longName: kl.has("longname") ? kl.get("longname").asText() : "Klasse-${classId}"
-                    ]
-
-                    timetableEntry.classes << clazz
-
-                    if (kl.has("orgid")) {
-                        def orgClassId = kl.get("orgid").asLong()
-                        def orgClass = masterData?.klassen?[orgClassId] ?: [
-                                id      : orgClassId,
-                                name    : "Klasse-${orgClassId}",
-                                longName: "Klasse-${orgClassId}"
+                    if (kl != null && !kl.isNull() && kl.has("id") && !kl.get("id").isNull()) {
+                        def classId = kl.get("id").asLong()
+                        def clazz = masterData?.klassen?[classId] ?: [
+                                id      : classId,
+                                name    : kl.has("name") && !kl.get("name").isNull() ? kl.get("name").asText() : "Klasse-${classId}",
+                                longName: kl.has("longname") && !kl.get("longname").isNull() ? kl.get("longname").asText() : "Klasse-${classId}"
                         ]
-                        timetableEntry.originalClasses << orgClass
+
+                        timetableEntry.classes << clazz
+
+                        if (kl.has("orgid") && !kl.get("orgid").isNull()) {
+                            def orgClassId = kl.get("orgid").asLong()
+                            def orgClass = masterData?.klassen?[orgClassId] ?: [
+                                    id      : orgClassId,
+                                    name    : "Klasse-${orgClassId}",
+                                    longName: "Klasse-${orgClassId}"
+                            ]
+                            timetableEntry.originalClasses << orgClass
+                        }
                     }
                 }
             }
@@ -927,6 +954,8 @@ class WebUntisClient {
 
         return entries
     }
+
+
 
     // Master-Daten aus der 2017 getUserData Response extrahieren
     private Map parseMasterDataFrom2017Response(JsonNode masterData) {
@@ -1324,19 +1353,30 @@ class WebUntisClient {
         def entity = new HttpEntity<>(request, headers)
 
         try {
+            println "DEBUG: Requesting timetable for elementId=${elementId}, type=${elementType}, dates=${startDate} to ${endDate}"
+
             ResponseEntity<String> response = restTemplate.postForEntity(url, entity, String)
             JsonNode jsonResponse = objectMapper.readTree(response.body)
+
+            // DEBUG: Response loggen
+            println "DEBUG: Raw getTimetable2017 response: ${objectMapper.writeValueAsString(jsonResponse)}"
 
             if (jsonResponse.has("error")) {
                 throw new WebUntisException("Timetable 2017 request failed: ${jsonResponse.get("error").get("message").asText()}")
             }
 
-            return parseEnhanced2017TimetableWithMasterData(jsonResponse.get("result"), session.masterData)
+            def result = jsonResponse.get("result")
+            println "DEBUG: Result has ${result.size()} entries"
+
+            return parseEnhanced2017TimetableWithMasterData(result, session.masterData)
 
         } catch (Exception e) {
+            println "ERROR: getTimetable2017 failed: ${e.message}"
+            e.printStackTrace()
             throw new WebUntisException("Error getting timetable 2017: ${e.message}")
         }
     }
+
 
     List<Map> getHomework2017(WebUntisSession session, LocalDate startDate, LocalDate endDate, int studentId) {
         // getUserData2017 vor Homework-Aufruf
