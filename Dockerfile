@@ -10,6 +10,9 @@ COPY gradlew .
 COPY build.gradle .
 COPY settings.gradle .
 
+# WICHTIG: Ausführungsrechte für gradlew setzen
+RUN chmod +x gradlew
+
 # Dependencies herunterladen (für besseres Caching)
 RUN ./gradlew dependencies --no-daemon || true
 
