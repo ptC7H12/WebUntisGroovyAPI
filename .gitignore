@@ -38,3 +38,8 @@ bin/
 
 ### Mac OS ###
 .DS_Store
+
+### Docker ###
+Dockerfile
+docker-compose.yml
+.dockerignore
