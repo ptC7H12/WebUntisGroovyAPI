@@ -482,70 +482,7 @@ class WebUntisClient {
         }
     }
 
-    List<Map> getTimetable2017Enhanced(WebUntisSession session, LocalDate startDate, LocalDate endDate, int elementId, String elementType) {
-        // Sicherstellen dass Master-Daten verfügbar sind
-        ensureUserData2017(session)
 
-        def url = "https://${session.server}/WebUntis/jsonrpc_intern.do?school=${session.school}"
-
-        def currentTime = System.currentTimeMillis()
-        def otp = createOtp(session.appSecret)
-
-        def params = [[
-                              element: [
-                                      id: elementId,
-                                      type: elementType,
-                                      keyType: "id"
-                              ],
-                              startDate: startDate.format(DateTimeFormatter.ofPattern("yyyy-MM-dd")),
-                              endDate: endDate.format(DateTimeFormatter.ofPattern("yyyy-MM-dd")),
-                              klasseFields: ["id", "name", "longname", "externalkey"],
-                              roomFields: ["id", "name", "longname", "externalkey"],
-                              subjectFields: ["id", "name", "longname", "externalkey"],
-                              teacherFields: ["id", "name", "longname", "externalkey"],
-                              timetableFields: ["id", "date", "startTime", "endTime", "kl", "te", "su", "ro", "lstype", "code", "info", "substText", "lstext", "lsnumber", "activityType", "statflags", "sg", "bkRemark", "bkText"],
-                              timetableFieldsRequired: true,
-                              showLsText: true,
-                              showStudentgroup: true,
-                              showLsNumber: true,
-                              showSubstText: true,
-                              showInfo: true,
-                              showBooking: true,
-                              showTopic: true,
-                              showHomework: false,
-                              masterDataTimestamp: currentTime.toString(),
-                              auth: [
-                                      user: session.username,
-                                      otp: otp,
-                                      clientTime: currentTime.toString()
-                              ]
-                      ]]
-
-        def request = createJsonRpcRequest("getTimetable2017", params)
-        def headers = createStandardHeaders()
-        def entity = new HttpEntity<>(request, headers)
-
-        try {
-            ResponseEntity<String> response = restTemplate.postForEntity(url, entity, String)
-            JsonNode jsonResponse = objectMapper.readTree(response.body)
-
-            if (jsonResponse.has("error")) {
-                throw new WebUntisException("UserData request failed: ${jsonResponse.get("error").get("message").asText()}")
-            }
-
-            def result = parseUserData(jsonResponse.get("result"))
-
-            // Master-Daten auch in Session speichern für spätere Verwendung
-            if (jsonResponse.get("result").has("masterData")) {
-                session.masterData = parseMasterDataFrom2017Response(jsonResponse.get("result").get("masterData"))
-            }
-
-            return result
-
-        } catch (Exception e) {
-            throw new WebUntisException("Error getting user data: ${e.message}")
-        }
-    }
 
     void logout(WebUntisSession session) {
         if (!session?.sessionId) return
@@ -956,6 +893,208 @@ class WebUntisClient {
     }
 
 
+    // Neuer Parser für WebUntis 2017 "periods" Format
+    private List<Map> parseWebUntis2017PeriodsFormat(JsonNode periods, Map masterData) {
+        def entries = []
+
+        if (periods == null || periods.isNull() || periods.size() == 0) {
+            println "DEBUG: No periods data to parse"
+            return entries
+        }
+
+        periods.each { period ->
+            if (period == null || period.isNull() || !period.has("id")) {
+                println "WARN: Skipping period without ID"
+                return
+            }
+
+            // DateTime parsen (ISO Format: "2025-10-02T13:40Z")
+            def startDateTime = period.has("startDateTime") ? period.get("startDateTime").asText() : null
+            def endDateTime = period.has("endDateTime") ? period.get("endDateTime").asText() : null
+
+            // Datum und Zeit extrahieren
+            def date = 0
+            def startTime = 0
+            def endTime = 0
+
+            if (startDateTime) {
+                // "2025-10-02T13:40Z" -> date: 20251002, time: 1340
+                def dateParts = startDateTime.split("T")
+                if (dateParts.length >= 2) {
+                    date = dateParts[0].replace("-", "").toInteger() // "2025-10-02" -> 20251002
+                    def timePart = dateParts[1].replace("Z", "").replace(":", "") // "13:40Z" -> "1340"
+                    startTime = timePart.substring(0, Math.min(4, timePart.length())).toInteger()
+                }
+            }
+
+            if (endDateTime) {
+                def timePart = endDateTime.split("T")[1].replace("Z", "").replace(":", "")
+                endTime = timePart.substring(0, Math.min(4, timePart.length())).toInteger()
+            }
+
+            def timetableEntry = [
+                    id              : period.get("id").asLong(),
+                    lessonId        : period.has("lessonId") ? period.get("lessonId").asLong() : null,
+                    date            : date,
+                    startTime       : startTime,
+                    endTime         : endTime,
+
+                    // Arrays für aufgelöste Daten
+                    subjects        : [],
+                    teachers        : [],
+                    rooms           : [],
+                    classes         : [],
+
+                    // Original-Arrays (für Vertretungen)
+                    originalSubjects: [],
+                    originalTeachers: [],
+                    originalRooms   : [],
+                    originalClasses : [],
+
+                    // 2017 Zusatzinfos
+                    foreColor       : period.has("foreColor") ? period.get("foreColor").asText() : null,
+                    backColor       : period.has("backColor") ? period.get("backColor").asText() : null,
+                    isOnlinePeriod  : period.has("isOnlinePeriod") ? period.get("isOnlinePeriod").asBoolean() : false,
+
+                    // Status aus "is" Array
+                    code            : "REGULAR",
+
+                    // Text-Informationen
+                    lessonText      : null,
+                    substitutionText: null,
+                    info            : null,
+
+                    is2017Format    : true
+            ]
+
+            // Status aus "is" Array extrahieren
+            if (period.has("is") && !period.get("is").isNull() && period.get("is").isArray()) {
+                def isArray = period.get("is")
+                if (isArray.size() > 0) {
+                    timetableEntry.code = isArray.get(0).asText().toUpperCase()
+                }
+            }
+
+            // Text-Informationen extrahieren
+            if (period.has("text") && !period.get("text").isNull()) {
+                def textObj = period.get("text")
+                timetableEntry.lessonText = textObj.has("lesson") ? textObj.get("lesson").asText() : null
+                timetableEntry.substitutionText = textObj.has("substitution") ? textObj.get("substitution").asText() : null
+                timetableEntry.info = textObj.has("info") ? textObj.get("info").asText() : null
+            }
+
+            // Hausaufgaben extrahieren
+            def homeWorks = []
+            if (period.has("homeWorks") && !period.get("homeWorks").isNull() && period.get("homeWorks").isArray()) {
+                period.get("homeWorks").each { hw ->
+                    homeWorks << [
+                            id        : hw.has("id") ? hw.get("id").asLong() : null,
+                            lessonId  : hw.has("lessonId") ? hw.get("lessonId").asLong() : null,
+                            startDate : hw.has("startDate") ? hw.get("startDate").asText() : null,
+                            endDate   : hw.has("endDate") ? hw.get("endDate").asText() : null,
+                            text      : hw.has("text") ? hw.get("text").asText() : "",
+                            remark    : hw.has("remark") && !hw.get("remark").isNull() ? hw.get("remark").asText() : null,
+                            completed : hw.has("completed") ? hw.get("completed").asBoolean() : false
+                    ]
+                }
+            }
+            timetableEntry.homeWorks = homeWorks
+
+            // Elements verarbeiten (teachers, subjects, rooms, classes)
+            if (period.has("elements") && !period.get("elements").isNull() && period.get("elements").isArray()) {
+                period.get("elements").each { element ->
+                    if (!element.has("type") || !element.has("id")) return
+
+                    def elementType = element.get("type").asText()
+                    def elementId = element.get("id").asLong()
+                    def orgId = element.has("orgId") ? element.get("orgId").asLong() : null
+
+                    switch (elementType) {
+                        case "TEACHER":
+                            def teacher = masterData?.teachers?[elementId] ?: [
+                                    id       : elementId,
+                                    name     : "Lehrer-${elementId}",
+                                    firstName: "",
+                                    lastName : ""
+                            ]
+                            timetableEntry.teachers << teacher
+
+                            // Original-Lehrer bei Vertretung
+                            if (orgId != null && orgId != elementId) {
+                                def orgTeacher = masterData?.teachers?[orgId] ?: [
+                                        id       : orgId,
+                                        name     : "Lehrer-${orgId}",
+                                        firstName: "",
+                                        lastName : ""
+                                ]
+                                timetableEntry.originalTeachers << orgTeacher
+                            }
+                            break
+
+                        case "SUBJECT":
+                            def subject = masterData?.subjects?[elementId] ?: [
+                                    id      : elementId,
+                                    name    : "Fach-${elementId}",
+                                    longName: "Fach-${elementId}"
+                            ]
+                            timetableEntry.subjects << subject
+
+                            if (orgId != null && orgId != elementId) {
+                                def orgSubject = masterData?.subjects?[orgId] ?: [
+                                        id      : orgId,
+                                        name    : "Fach-${orgId}",
+                                        longName: "Fach-${orgId}"
+                                ]
+                                timetableEntry.originalSubjects << orgSubject
+                            }
+                            break
+
+                        case "ROOM":
+                            def room = masterData?.rooms?[elementId] ?: [
+                                    id      : elementId,
+                                    name    : "Raum-${elementId}",
+                                    longName: "Raum-${elementId}"
+                            ]
+                            timetableEntry.rooms << room
+
+                            if (orgId != null && orgId != elementId) {
+                                def orgRoom = masterData?.rooms?[orgId] ?: [
+                                        id      : orgId,
+                                        name    : "Raum-${orgId}",
+                                        longName: "Raum-${orgId}"
+                                ]
+                                timetableEntry.originalRooms << orgRoom
+                            }
+                            break
+
+                        case "CLASS":
+                            def clazz = masterData?.klassen?[elementId] ?: [
+                                    id      : elementId,
+                                    name    : "Klasse-${elementId}",
+                                    longName: "Klasse-${elementId}"
+                            ]
+                            timetableEntry.classes << clazz
+
+                            if (orgId != null && orgId != elementId) {
+                                def orgClass = masterData?.klassen?[orgId] ?: [
+                                        id      : orgId,
+                                        name    : "Klasse-${orgId}",
+                                        longName: "Klasse-${orgId}"
+                                ]
+                                timetableEntry.originalClasses << orgClass
+                            }
+                            break
+                    }
+                }
+            }
+
+            entries << timetableEntry
+        }
+
+        println "DEBUG: Parsed ${entries.size()} timetable entries from 2017 periods format"
+        return entries
+    }
+
 
     // Master-Daten aus der 2017 getUserData Response extrahieren
     private Map parseMasterDataFrom2017Response(JsonNode masterData) {
@@ -1178,33 +1317,79 @@ class WebUntisClient {
     // Erweiterte Homework-Parser mit Master-Daten
     private List<Map> parseHomework2017WithMasterData(JsonNode result, Map masterData) {
         def homework = []
-        if (result.has("homework")) {
-            result.get("homework").each { hw ->
+
+        if (result.has("homeWorks")) {
+            result.get("homeWorks").each { hw ->
                 def homeworkEntry = [
                         id: hw.get("id").asLong(),
-                        lessonId: hw.has("lessonId") ? hw.get("lessonId").asLong() : null,
-                        date: hw.has("date") ? hw.get("date").asInt() : null,
-                        dueDate: hw.has("dueDate") ? hw.get("dueDate").asInt() : null,
-                        text: hw.has("text") ? hw.get("text").asText() : "",
-                        remark: hw.has("remark") ? hw.get("remark").asText() : "",
+                        lessonId: hw.has("lessonId") && !hw.get("lessonId").isNull() ? hw.get("lessonId").asLong() : null,
+                        startDate: hw.has("startDate") && !hw.get("startDate").isNull() ? hw.get("startDate").asText() : null,
+                        endDate: hw.has("endDate") && !hw.get("endDate").isNull() ? hw.get("endDate").asText() : null,
+                        text: hw.has("text") && !hw.get("text").isNull() ? hw.get("text").asText() : "",
+                        remark: hw.has("remark") && !hw.get("remark").isNull() ? hw.get("remark").asText() : null,
                         completed: hw.has("completed") ? hw.get("completed").asBoolean() : false,
                         attachments: hw.has("attachments") ? parseAttachments(hw.get("attachments")) : []
                 ]
 
-                // Subject-Informationen mit Master-Daten anreichern
-                if (hw.has("subjectId") && masterData?.subjects) {
-                    def subjectId = hw.get("subjectId").asLong()
-                    def subject = masterData.subjects[subjectId]
-                    if (subject) {
-                        homeworkEntry.subject = subject
+                // Lesson-Informationen aus lessonsById ermitteln
+                if (hw.has("lessonId") && !hw.get("lessonId").isNull() && result.has("lessonsById")) {
+                    def lessonId = hw.get("lessonId").asLong().toString()
+                    def lessonsById = result.get("lessonsById")
+
+                    if (lessonsById.has(lessonId)) {
+                        def lesson = lessonsById.get(lessonId)
+
+                        // Subject auflösen
+                        if (lesson.has("subjectId") && !lesson.get("subjectId").isNull()) {
+                            def subjectId = lesson.get("subjectId").asLong()
+                            def subject = masterData?.subjects?[subjectId]
+                            if (subject) {
+                                homeworkEntry.subject = subject
+                            }
+                        }
+
+                        // Klassen auflösen
+                        if (lesson.has("klassenIds")) {
+                            def classes = []
+                            lesson.get("klassenIds").each { klassenIdNode ->
+                                def klassenId = klassenIdNode.asLong()
+                                def clazz = masterData?.klassen?[klassenId] ?: [
+                                        id: klassenId,
+                                        name: "Klasse-${klassenId}",
+                                        longName: "Klasse-${klassenId}"
+                                ]
+                                classes << clazz
+                            }
+                            homeworkEntry.classes = classes
+                        }
+
+                        // Lehrer auflösen
+                        if (lesson.has("teacherIds")) {
+                            def teachers = []
+                            lesson.get("teacherIds").each { teacherIdNode ->
+                                def teacherId = teacherIdNode.asLong()
+                                def teacher = masterData?.teachers?[teacherId] ?: [
+                                        id: teacherId,
+                                        name: "Lehrer-${teacherId}",
+                                        firstName: "",
+                                        lastName: ""
+                                ]
+                                teachers << teacher
+                            }
+                            homeworkEntry.teachers = teachers
+                        }
                     }
                 }
 
                 homework << homeworkEntry
             }
         }
+
+        println "DEBUG: Parsed ${homework.size()} homework entries"
         return homework
     }
+
+
 
     private List<Map> parseAttachments(JsonNode attachments) {
         def result = []
@@ -1366,9 +1551,24 @@ class WebUntisClient {
             }
 
             def result = jsonResponse.get("result")
-            println "DEBUG: Result has ${result.size()} entries"
 
-            return parseEnhanced2017TimetableWithMasterData(result, session.masterData)
+            // WICHTIG: WebUntis 2017 API gibt result.timetable.periods zurück!
+            def timetableData
+            if (result.has("timetable")) {
+                def timetable = result.get("timetable")
+                if (timetable.has("periods")) {
+                    timetableData = timetable.get("periods")
+                    println "DEBUG: Found ${timetableData.size()} periods in timetable"
+                } else {
+                    timetableData = timetable
+                    println "DEBUG: Using timetable directly (${timetableData.size()} entries)"
+                }
+            } else {
+                timetableData = result
+                println "DEBUG: Using result directly"
+            }
+
+            return parseWebUntis2017PeriodsFormat(timetableData, session.masterData)
 
         } catch (Exception e) {
             println "ERROR: getTimetable2017 failed: ${e.message}"
@@ -1405,19 +1605,31 @@ class WebUntisClient {
         def entity = new HttpEntity<>(request, headers)
 
         try {
+            println "DEBUG: Requesting homework for studentId=${studentId}, dates=${startDate} to ${endDate}"
+
             ResponseEntity<String> response = restTemplate.postForEntity(url, entity, String)
             JsonNode jsonResponse = objectMapper.readTree(response.body)
+
+            // DEBUG: Response loggen
+            println "DEBUG: Raw getHomeWork2017 response: ${objectMapper.writeValueAsString(jsonResponse)}"
 
             if (jsonResponse.has("error")) {
                 throw new WebUntisException("Homework request failed: ${jsonResponse.get("error").get("message").asText()}")
             }
 
-            return parseHomework2017WithMasterData(jsonResponse.get("result"), session.masterData)
+            def result = jsonResponse.get("result")
+            println "DEBUG: Homework result structure: ${result}"
+
+            return parseHomework2017WithMasterData(result, session.masterData)
 
         } catch (Exception e) {
+            println "ERROR: getHomework2017 failed: ${e.message}"
+            e.printStackTrace()
             throw new WebUntisException("Error getting homework: ${e.message}")
         }
     }
+
+
 
     List<Map> getMessagesOfDay2017(WebUntisSession session, LocalDate date) {
         // getUserData2017 vor Messages-Aufruf

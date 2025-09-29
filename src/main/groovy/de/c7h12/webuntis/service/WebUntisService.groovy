@@ -127,29 +127,6 @@ class WebUntisService {
 
     // ========== Enhanced 2017 API Methods ==========
 
-    List<Map> getTimetable2017Enhanced(String school, String username, String password, String server,
-                                       LocalDate startDate, LocalDate endDate, String elementType = "STUDENT", String appSecret) {
-        WebUntisSession session = null
-        try {
-            if (!appSecret) {
-                throw new WebUntisException("appSecret ist für 2017 API Methoden erforderlich")
-            }
-
-            // 2017 API mit App Secret - getUserData2017 wird automatisch aufgerufen
-            session = webUntisClient.authenticateWithSecret(school, username, appSecret, server)
-            println "DEBUG: Using 2017 API enhanced with app secret authentication"
-
-            // Enhanced Timetable mit automatischem getUserData2017 Aufruf
-            def timetable = webUntisClient.getTimetable2017Enhanced(session, startDate, endDate, session.personId, elementType)
-
-            return formatTimetableWithTimeInfo(timetable)
-
-        } finally {
-            if (session) {
-                webUntisClient.logout(session)
-            }
-        }
-    }
 
     List<Map> getTimetable2017(String school, String username, String password, String server,
                                LocalDate startDate, LocalDate endDate, String elementType = "STUDENT", String appSecret) {

@@ -119,40 +119,6 @@ class WebUntisController {
 
     // ========== Enhanced 2017 API Endpoints (Alle benötigen appSecret) ==========
 
-    @PostMapping("/v2017/timetable/enhanced")
-    ResponseEntity<?> getTimetableEnhanced2017(@RequestBody Map request) {
-        try {
-            def startDate = LocalDate.parse(request.startDate as String)
-            def endDate = LocalDate.parse(request.endDate as String)
-            def elementType = request.elementType as String ?: "STUDENT"
-            def appSecret = request.appSecret as String
-
-            if (!appSecret) {
-                return ResponseEntity.badRequest()
-                        .body([error: "appSecret ist für 2017 API Methoden erforderlich"])
-            }
-
-            def timetable = webUntisService.getTimetable2017Enhanced(
-                    request.school as String,
-                    request.username as String,
-                    request.password as String,
-                    request.server as String,
-                    startDate,
-                    endDate,
-                    elementType,
-                    appSecret
-            )
-            return ResponseEntity.ok([
-                    status: "success",
-                    format: "2017-enhanced",
-                    dataCount: timetable.size(),
-                    data: timetable
-            ])
-        } catch (Exception e) {
-            return ResponseEntity.badRequest()
-                    .body([error: "Fehler beim Abrufen des erweiterten 2017 Stundenplans: ${e.message}"])
-        }
-    }
 
     @PostMapping("/v2017/timetable")
     ResponseEntity<?> getTimetableEnhanced(@RequestBody Map request) {
