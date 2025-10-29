@@ -8,14 +8,16 @@ import org.springframework.http.MediaType
 import org.springframework.http.ResponseEntity
 import org.springframework.stereotype.Component
 import org.springframework.web.client.RestTemplate
+import org.springframework.web.util.UriComponentsBuilder
+import java.net.URI
 
-import javax.crypto.Mac
+/*import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec
 import java.net.URLEncoder
-import java.nio.ByteBuffer
+import java.nio.ByteBuffer*/
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
-import org.apache.commons.codec.binary.Base32
+//import org.apache.commons.codec.binary.Base32
 import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec
 import java.time.Clock
@@ -26,13 +28,40 @@ class WebUntisClient {
     private final RestTemplate restTemplate = new RestTemplate()
     private final ObjectMapper objectMapper = new ObjectMapper()
 
+    /**
+     * Encoded einen String für URL Query-Parameter korrekt.
+     * URLEncoder.encode macht aus Leerzeichen ein "+", was in Query-Strings teilweise nicht korrekt ist.
+     * Diese Methode stellt sicher, dass Sonderzeichen korrekt encoded werden.
+     */
+    private String encodeForUrl(String value) {
+        if (!value) return value
+
+        // WICHTIG: Nicht nochmal encoden wenn bereits encoded!
+        if (value.contains("%")) {
+            println "DEBUG: Value already URL-encoded, skipping: ${value}"
+            return value
+        }
+
+        try {
+            def encoded = URLEncoder.encode(value, "UTF-8")
+                    .replace("+", "%20")  // Leerzeichen als %20 statt +
+
+            println "DEBUG: Encoded '${value}' to '${encoded}'"
+            return encoded
+
+        } catch (Exception e) {
+            println "ERROR: URL Encoding failed for '${value}': ${e.message}"
+            return value
+        }
+    }
+
     WebUntisSession authenticate(String school, String username, String password, String server) {
         // Server URL normalisieren - https:// entfernen falls vorhanden
         def normalizedServer = server.startsWith("https://") ? server.substring(8) : server
         normalizedServer = normalizedServer.startsWith("http://") ? normalizedServer.substring(7) : normalizedServer
 
         // Authentifizierung muss bereits mit school parameter erfolgen
-        def encodedSchool = URLEncoder.encode(school, "UTF-8")
+        def encodedSchool = encodeForUrl(school)
         def url = "https://${normalizedServer}/WebUntis/jsonrpc.do?school=${encodedSchool}"
 
         def params = [
@@ -82,7 +111,12 @@ class WebUntisClient {
     }
 
     List<Map> getTimetable(WebUntisSession session, LocalDate startDate, LocalDate endDate, int elementId, int elementType) {
-        def url = "https://${session.server}/WebUntis/jsonrpc.do?school=${session.school}"
+        def uri = UriComponentsBuilder
+                .fromHttpUrl("https://${session.server}/WebUntis/jsonrpc_intern.do")
+                .queryParam("school", session.school)
+                .build()
+                .encode()
+                .toUri()
 
         // Erweiterte Parameter wie im Java-Code
         def element = [
@@ -107,7 +141,7 @@ class WebUntisClient {
         def entity = new HttpEntity<>(request, headers)
 
         try {
-            ResponseEntity<String> response = restTemplate.postForEntity(url, entity, String)
+            ResponseEntity<String> response = restTemplate.postForEntity(uri, entity, String)
             JsonNode jsonResponse = objectMapper.readTree(response.body)
 
             if (jsonResponse.has("error")) {
@@ -311,14 +345,17 @@ class WebUntisClient {
         def normalizedServer = server.startsWith("https://") ? server.substring(8) : server
         normalizedServer = normalizedServer.startsWith("http://") ? normalizedServer.substring(7) : normalizedServer
 
-        def encodedSchool = URLEncoder.encode(school, "UTF-8")
-        def url = "https://${normalizedServer}/WebUntis/jsonrpc_intern.do?school=${encodedSchool}"
+        // WICHTIG: UriComponentsBuilder für korrektes Encoding!
+        def uri = UriComponentsBuilder
+                .fromHttpUrl("https://${normalizedServer}/WebUntis/jsonrpc_intern.do")
+                .queryParam("school", school)  // Wird automatisch korrekt encoded!
+                .build()
+                .encode()
+                .toUri()
 
-        // Zeitbasierter OTP-Code generieren
         def currentTime = System.currentTimeMillis()
         def otp = createOtp(appSecret)
 
-        // Korrekte 2017 API Struktur mit auth-Objekt
         def params = [[
                               masterDataTimestamp: currentTime.toString(),
                               type: "STUDENT",
@@ -334,23 +371,29 @@ class WebUntisClient {
         def entity = new HttpEntity<>(request, headers)
 
         try {
+            println "="*60
             println "DEBUG: Authenticating with 2017 API..."
-            println "DEBUG: URL: ${url}"
+            println "DEBUG: URI: ${uri}"
+            println "DEBUG: School (raw): ${school}"
             println "DEBUG: User: ${username}"
             println "DEBUG: OTP: ${otp}"
-            println "DEBUG: ClientTime: ${currentTime}"
+            println "="*60
 
-            ResponseEntity<String> response = restTemplate.postForEntity(url, entity, String)
+            // WICHTIG: Verwende URI statt String!
+            ResponseEntity<String> response = restTemplate.postForEntity(uri, entity, String)
             JsonNode jsonResponse = objectMapper.readTree(response.body)
 
             if (jsonResponse.has("error")) {
                 def error = jsonResponse.get("error")
                 def errorMsg = error.get("message").asText()
                 def errorCode = error.has("code") ? error.get("code").asInt() : -1
-                throw new WebUntisException("Enhanced authentication failed [${errorCode}]: ${errorMsg}")
+
+                println "ERROR: WebUntis API Error [${errorCode}]: ${errorMsg}"
+                println "="*60
+
+                throw new WebUntisException("Authentication failed [${errorCode}]: ${errorMsg}")
             }
 
-            // Session aus getUserData2017 Response extrahieren
             def result = jsonResponse.get("result")
             def userData = result.get("userData")
             def masterData = result.get("masterData")
@@ -361,23 +404,21 @@ class WebUntisClient {
             def cookies = response.getHeaders().getFirst("Set-Cookie")
             def session = new WebUntisSession(sessionId, personId, cookies, school, normalizedServer, appSecret, username)
 
-            // Master-Daten in Session speichern für späteres Mapping
             session.masterData = parseMasterDataFrom2017Response(masterData)
-
             logMasterDataStats(session.masterData)
 
-            println "DEBUG: 2017 API authentication successful"
-            println "DEBUG: Session ID: ${sessionId}"
-            println "DEBUG: Person ID: ${personId}"
-
+            println "✅ Authentication successful!"
+            println "   Person ID: ${personId}"
             if (userData.has("displayName")) {
-                println "DEBUG: Authenticated as: ${userData.get("displayName").asText()}"
+                println "   User: ${userData.get("displayName").asText()}"
             }
+            println "="*60
 
             return session
 
         } catch (Exception e) {
-            println "ERROR: 2017 API authentication failed: ${e.message}"
+            println "❌ Authentication failed: ${e.message}"
+            println "="*60
             throw new WebUntisException("Enhanced authentication error: ${e.message}")
         }
     }
@@ -407,7 +448,12 @@ class WebUntisClient {
 
     // Interne Methode zum Laden der UserData2017 ohne neue Session zu erstellen
     private void loadUserData2017(WebUntisSession session) {
-        def url = "https://${session.server}/WebUntis/jsonrpc_intern.do?school=${session.school}"
+        def uri = UriComponentsBuilder
+                .fromHttpUrl("https://${session.server}/WebUntis/jsonrpc_intern.do")
+                .queryParam("school", session.school)
+                .build()
+                .encode()
+                .toUri()
 
         def currentTime = System.currentTimeMillis()
         def otp = createOtp(session.appSecret)
@@ -429,7 +475,7 @@ class WebUntisClient {
         try {
             println "DEBUG: Loading getUserData2017 for session..."
 
-            ResponseEntity<String> response = restTemplate.postForEntity(url, entity, String)
+            ResponseEntity<String> response = restTemplate.postForEntity(uri, entity, String)
             JsonNode jsonResponse = objectMapper.readTree(response.body)
 
             if (jsonResponse.has("error")) {
@@ -1515,7 +1561,12 @@ class WebUntisClient {
         // Sicherstellen dass Master-Daten verfügbar sind
         ensureUserData2017(session)
 
-        def url = "https://${session.server}/WebUntis/jsonrpc_intern.do?school=${session.school}"
+        def uri = UriComponentsBuilder
+                .fromHttpUrl("https://${session.server}/WebUntis/jsonrpc_intern.do")
+                .queryParam("school", session.school)
+                .build()
+                .encode()
+                .toUri()
 
         def currentTime = System.currentTimeMillis()
         def otp = createOtp(session.appSecret)
@@ -1540,7 +1591,7 @@ class WebUntisClient {
         try {
             println "DEBUG: Requesting timetable for elementId=${elementId}, type=${elementType}, dates=${startDate} to ${endDate}"
 
-            ResponseEntity<String> response = restTemplate.postForEntity(url, entity, String)
+            ResponseEntity<String> response = restTemplate.postForEntity(uri, entity, String)
             JsonNode jsonResponse = objectMapper.readTree(response.body)
 
             // DEBUG: Response loggen
@@ -1582,7 +1633,12 @@ class WebUntisClient {
         // getUserData2017 vor Homework-Aufruf
         ensureUserData2017(session)
 
-        def url = "https://${session.server}/WebUntis/jsonrpc_intern.do?school=${session.school}"
+        def uri = UriComponentsBuilder
+                .fromHttpUrl("https://${session.server}/WebUntis/jsonrpc_intern.do")
+                .queryParam("school", session.school)
+                .build()
+                .encode()
+                .toUri()
 
         def currentTime = System.currentTimeMillis()
         def otp = createOtp(session.appSecret)
@@ -1607,7 +1663,7 @@ class WebUntisClient {
         try {
             println "DEBUG: Requesting homework for studentId=${studentId}, dates=${startDate} to ${endDate}"
 
-            ResponseEntity<String> response = restTemplate.postForEntity(url, entity, String)
+            ResponseEntity<String> response = restTemplate.postForEntity(uri, entity, String)
             JsonNode jsonResponse = objectMapper.readTree(response.body)
 
             // DEBUG: Response loggen
@@ -1635,7 +1691,12 @@ class WebUntisClient {
         // getUserData2017 vor Messages-Aufruf
         ensureUserData2017(session)
 
-        def url = "https://${session.server}/WebUntis/jsonrpc_intern.do?school=${session.school}"
+        def uri = UriComponentsBuilder
+                .fromHttpUrl("https://${session.server}/WebUntis/jsonrpc_intern.do")
+                .queryParam("school", session.school)
+                .build()
+                .encode()
+                .toUri()
 
         def currentTime = System.currentTimeMillis()
         def otp = createOtp(session.appSecret)
@@ -1655,7 +1716,7 @@ class WebUntisClient {
         def entity = new HttpEntity<>(request, headers)
 
         try {
-            ResponseEntity<String> response = restTemplate.postForEntity(url, entity, String)
+            ResponseEntity<String> response = restTemplate.postForEntity(uri, entity, String)
             JsonNode jsonResponse = objectMapper.readTree(response.body)
 
             if (jsonResponse.has("error")) {
@@ -1673,7 +1734,12 @@ class WebUntisClient {
         // getUserData2017 vor Absences-Aufruf
         ensureUserData2017(session)
 
-        def url = "https://${session.server}/WebUntis/jsonrpc_intern.do?school=${session.school}"
+        def uri = UriComponentsBuilder
+                .fromHttpUrl("https://${session.server}/WebUntis/jsonrpc_intern.do")
+                .queryParam("school", session.school)
+                .build()
+                .encode()
+                .toUri()
 
         def currentTime = System.currentTimeMillis()
         def otp = createOtp(session.appSecret)
@@ -1697,7 +1763,7 @@ class WebUntisClient {
         def entity = new HttpEntity<>(request, headers)
 
         try {
-            ResponseEntity<String> response = restTemplate.postForEntity(url, entity, String)
+            ResponseEntity<String> response = restTemplate.postForEntity(uri, entity, String)
             JsonNode jsonResponse = objectMapper.readTree(response.body)
 
             if (jsonResponse.has("error")) {
@@ -1713,7 +1779,12 @@ class WebUntisClient {
 
     // Öffentliche getUserData2017 Methode (für explizite Aufrufe)
     Map getUserData2017(WebUntisSession session) {
-        def url = "https://${session.server}/WebUntis/jsonrpc_intern.do?school=${session.school}"
+        def uri = UriComponentsBuilder
+                .fromHttpUrl("https://${session.server}/WebUntis/jsonrpc_intern.do")
+                .queryParam("school", session.school)
+                .build()
+                .encode()
+                .toUri()
 
         def currentTime = System.currentTimeMillis()
         def otp = createOtp(session.appSecret)
@@ -1733,7 +1804,7 @@ class WebUntisClient {
         def entity = new HttpEntity<>(request, headers)
 
         try {
-            ResponseEntity<String> response = restTemplate.postForEntity(url, entity, String)
+            ResponseEntity<String> response = restTemplate.postForEntity(uri, entity, String)
             JsonNode jsonResponse = objectMapper.readTree(response.body)
 
             if (jsonResponse.has("error")) {

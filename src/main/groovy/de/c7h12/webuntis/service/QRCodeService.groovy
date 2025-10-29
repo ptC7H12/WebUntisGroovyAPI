@@ -8,6 +8,7 @@ import org.springframework.web.multipart.MultipartFile
 
 import javax.imageio.ImageIO
 import java.awt.image.BufferedImage
+import java.nio.charset.StandardCharsets
 
 @Service
 class QRCodeService {
@@ -70,32 +71,82 @@ class QRCodeService {
     }
 
     /**
-     * Dekodiert QR-Code aus BufferedImage
+     * Dekodiert QR-Code aus BufferedImage mit Multi-Encoding-Support
      */
     private String decodeQRCode(BufferedImage image) {
         try {
             LuminanceSource source = new BufferedImageLuminanceSource(image)
             BinaryBitmap bitmap = new BinaryBitmap(new HybridBinarizer(source))
 
-            // QR-Code dekodieren mit verschiedenen Hints für bessere Erkennung
-            Map<DecodeHintType, Object> hints = [
-                    (DecodeHintType.TRY_HARDER): Boolean.TRUE,
-                    (DecodeHintType.POSSIBLE_FORMATS): [BarcodeFormat.QR_CODE],
-                    (DecodeHintType.CHARACTER_SET): "UTF-8"
-            ]
+            // WebUntis verwendet ISO-8859-1, daher zuerst versuchen
+            def encodingsToTry = ["ISO-8859-1", "UTF-8"]
 
-            Result result = new MultiFormatReader().decode(bitmap, hints)
+            for (String charset : encodingsToTry) {
+                try {
+                    Map<DecodeHintType, Object> hints = [
+                            (DecodeHintType.TRY_HARDER): Boolean.TRUE,
+                            (DecodeHintType.POSSIBLE_FORMATS): [BarcodeFormat.QR_CODE],
+                            (DecodeHintType.CHARACTER_SET): charset
+                    ]
 
-            println "DEBUG: QR-Code erfolgreich dekodiert: ${result.getText()}"
-            println "DEBUG: Format: ${result.getBarcodeFormat()}"
+                    Result result = new MultiFormatReader().decode(bitmap, hints)
+                    String decoded = result.getText()
 
-            return result.getText()
+                    println "DEBUG: QR-Code dekodiert mit ${charset}: ${decoded}"
+
+                    // Prüfe ob das Ergebnis keine Encoding-Fehler enthält (nur �)
+                    if (!decoded.contains("�")) {
+                        println "DEBUG: Akzeptiere Ergebnis von ${charset} (keine Encoding-Fehler)"
+                        return decoded
+                    }
+
+                } catch (Exception e) {
+                    println "DEBUG: Dekodierung mit ${charset} fehlgeschlagen: ${e.message}"
+                }
+            }
+
+            throw new RuntimeException("QR-Code konnte mit keinem Encoding korrekt dekodiert werden")
 
         } catch (NotFoundException e) {
             throw new RuntimeException("Kein QR-Code im Bild gefunden", e)
         } catch (Exception e) {
             throw new RuntimeException("Fehler beim Dekodieren des QR-Codes: ${e.message}", e)
         }
+    }
+
+    /**
+     * Versucht Encoding-Probleme zu beheben
+     * Häufiges Problem: QR-Code wurde als ISO-8859-1 erstellt, aber als UTF-8 gelesen
+     */
+    private String fixEncodingIssues(String text) {
+        try {
+            // Versuche 1: ISO-8859-1 -> UTF-8 Konvertierung
+            byte[] bytes = text.getBytes(StandardCharsets.ISO_8859_1)
+            String utf8 = new String(bytes, StandardCharsets.UTF_8)
+            if (!utf8.contains("�")) {
+                return utf8
+            }
+
+            // Versuche 2: Windows-1252 -> UTF-8
+            bytes = text.getBytes("Windows-1252")
+            utf8 = new String(bytes, StandardCharsets.UTF_8)
+            if (!utf8.contains("�")) {
+                return utf8
+            }
+
+            // Versuche 3: Direkte Byte-Konvertierung
+            // Manchmal hilft es, die Bytes als ISO-8859-1 zu lesen und als UTF-8 zu interpretieren
+            bytes = text.getBytes(StandardCharsets.UTF_8)
+            String iso = new String(bytes, StandardCharsets.ISO_8859_1)
+            if (!iso.contains("�")) {
+                return iso
+            }
+
+        } catch (Exception e) {
+            println "DEBUG: Encoding-Korrektur fehlgeschlagen: ${e.message}"
+        }
+
+        return text // Fallback auf Original
     }
 
     /**
@@ -248,24 +299,24 @@ class QRCodeService {
             // Parameter parsen
             def params = parseQueryString(queryString)
 
-            // Standard-Parameter extrahieren
-            result.url = params.url ?: null
-            result.school = params.school ?: null
-            result.user = params.user ?: null
-            result.key = params.key ?: null
-            result.schoolNumber = params.schoolNumber ?: null
+            // Standard-Parameter extrahieren und explizit als String speichern
+            result.url = params.url?.toString()
+            result.school = params.school?.toString()
+            result.user = params.user?.toString()
+            result.key = params.key?.toString()
+            result.schoolNumber = params.schoolNumber?.toString()
 
-            // Optional: Server normalisieren (https:// hinzufügen falls nicht vorhanden)
+            // FIX: Server normalisieren und explizit als String konvertieren
             if (result.url && !result.url.startsWith("http")) {
-                result.server = "https://${result.url}"
+                result.server = "https://${result.url}".toString()
             } else {
-                result.server = result.url
+                result.server = result.url?.toString()
             }
 
-            // Alle weiteren Parameter auch hinzufügen
+            // Alle weiteren Parameter auch hinzufügen (als Strings)
             params.each { key, value ->
                 if (!result.containsKey(key)) {
-                    result[key] = value
+                    result[key] = value?.toString()
                 }
             }
 
@@ -296,25 +347,25 @@ class QRCodeService {
             // Issuer und Username aus Label extrahieren
             if (labelPart.contains(":")) {
                 def parts = labelPart.split(":")
-                result.issuer = URLDecoder.decode(parts[0], "UTF-8")
-                result.username = URLDecoder.decode(parts[1], "UTF-8")
+                result.issuer = URLDecoder.decode(parts[0], StandardCharsets.UTF_8.name())
+                result.username = URLDecoder.decode(parts[1], StandardCharsets.UTF_8.name())
             } else {
-                result.label = URLDecoder.decode(labelPart, "UTF-8")
+                result.label = URLDecoder.decode(labelPart, StandardCharsets.UTF_8.name())
             }
 
             // Query-String extrahieren
             def queryString = uri.substring(uri.indexOf("?") + 1)
             def params = parseQueryString(queryString)
 
-            result.secret = params.secret ?: null
-            result.algorithm = params.algorithm ?: "SHA1"
+            result.secret = params.secret?.toString()
+            result.algorithm = (params.algorithm ?: "SHA1").toString()
             result.digits = params.digits ? params.digits.toInteger() : 6
             result.period = params.period ? params.period.toInteger() : 30
 
             // Alle weiteren Parameter
             params.each { key, value ->
                 if (!result.containsKey(key)) {
-                    result[key] = value
+                    result[key] = value?.toString()
                 }
             }
 
@@ -332,21 +383,88 @@ class QRCodeService {
     }
 
     /**
-     * Parst Query-String zu Map
+     * Parst Query-String zu Map mit korrektem UTF-8 Encoding
      * Beispiel: "url=test.com&school=myschool" -> [url: "test.com", school: "myschool"]
      */
     private Map<String, String> parseQueryString(String queryString) {
         def params = [:]
 
-        queryString.split("&").each { param ->
-            def parts = param.split("=", 2)
-            if (parts.length == 2) {
-                def key = URLDecoder.decode(parts[0], "UTF-8")
-                def value = URLDecoder.decode(parts[1], "UTF-8")
-                params[key] = value
+        try {
+            queryString.split("&").each { param ->
+                def parts = param.split("=", 2)
+                if (parts.length == 2) {
+                    def key = URLDecoder.decode(parts[0], StandardCharsets.UTF_8.name())
+                    def value = URLDecoder.decode(parts[1], StandardCharsets.UTF_8.name())
+                    params[key] = value
+                }
+            }
+        } catch (Exception e) {
+            println "ERROR: Fehler beim Parsen des Query-Strings: ${e.message}"
+            // Fallback: Versuche ohne URL-Decoding
+            queryString.split("&").each { param ->
+                def parts = param.split("=", 2)
+                if (parts.length == 2) {
+                    params[parts[0]] = parts[1]
+                }
             }
         }
 
         return params
+    }
+
+    /**
+     * Alternative QR-Code Dekodierung mit Raw-Byte-Zugriff
+     * Versucht die rohen Bytes des QR-Codes zu extrahieren
+     */
+    private String decodeQRCodeRawBytes(BufferedImage image) {
+        try {
+            LuminanceSource source = new BufferedImageLuminanceSource(image)
+            BinaryBitmap bitmap = new BinaryBitmap(new HybridBinarizer(source))
+
+            // Dekodiere ohne Charset-Hint, um die rohen Bytes zu bekommen
+            Map<DecodeHintType, Object> hints = [
+                    (DecodeHintType.TRY_HARDER): Boolean.TRUE,
+                    (DecodeHintType.POSSIBLE_FORMATS): [BarcodeFormat.QR_CODE],
+                    (DecodeHintType.PURE_BARCODE): Boolean.FALSE
+            ]
+
+            Result result = new MultiFormatReader().decode(bitmap, hints)
+
+            // Hole die rohen Bytes
+            byte[] rawBytes = result.getRawBytes()
+
+            if (rawBytes != null && rawBytes.length > 0) {
+                println "DEBUG: Raw bytes gefunden: ${rawBytes.length} bytes"
+
+                // Versuche verschiedene Encodings für die Raw Bytes
+                def encodings = [
+                        StandardCharsets.UTF_8,
+                        StandardCharsets.ISO_8859_1,
+                        java.nio.charset.Charset.forName("Windows-1252")
+                ]
+
+                for (charset in encodings) {
+                    try {
+                        String decoded = new String(rawBytes, charset)
+                        println "DEBUG: Raw bytes mit ${charset.name()}: ${decoded}"
+
+                        // Wenn kein Encoding-Fehler, akzeptiere es
+                        if (!decoded.contains("�")) {
+                            println "DEBUG: Akzeptiere Raw-Byte-Dekodierung mit ${charset.name()}"
+                            return decoded
+                        }
+                    } catch (Exception e) {
+                        println "DEBUG: Raw-Byte-Dekodierung mit ${charset.name()} fehlgeschlagen"
+                    }
+                }
+            }
+
+            // Fallback auf getText()
+            return result.getText()
+
+        } catch (Exception e) {
+            println "DEBUG: Raw-Byte-Dekodierung komplett fehlgeschlagen: ${e.message}"
+            throw new RuntimeException("Raw-Byte-Dekodierung fehlgeschlagen: ${e.message}", e)
+        }
     }
 }
