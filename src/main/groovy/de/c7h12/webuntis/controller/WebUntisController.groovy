@@ -241,6 +241,39 @@ class WebUntisController {
         }
     }
 
+    @PostMapping("/v2017/holidays")
+    ResponseEntity<?> getHolidays(@RequestBody Map request) {
+        try {
+            def appSecret = request.appSecret as String
+
+            if (!appSecret) {
+                return ResponseEntity.badRequest()
+                        .body([error: "appSecret ist für 2017 API Methoden erforderlich"])
+            }
+
+            // Optional: Nach Schuljahr filtern
+            def schoolyearId = request.schoolyearId ? request.schoolyearId as Integer : null
+
+            def holidays = webUntisService.getHolidays2017(
+                    request.school as String,
+                    request.username as String,
+                    request.password as String,
+                    request.server as String,
+                    appSecret,
+                    schoolyearId
+            )
+
+            return ResponseEntity.ok([
+                    status: "success",
+                    count: holidays.size(),
+                    data: holidays
+            ])
+        } catch (Exception e) {
+            return ResponseEntity.badRequest()
+                    .body([error: "Fehler beim Abrufen der Ferien: ${e.message}"])
+        }
+    }
+
     @PostMapping("/v2017/userdata")
     ResponseEntity<?> getUserData(@RequestBody Map request) {
         try {

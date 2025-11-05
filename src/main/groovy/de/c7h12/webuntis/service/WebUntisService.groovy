@@ -236,7 +236,188 @@ class WebUntisService {
         }
     }
 
+    List<Map> getHolidays2017(String school, String username, String password, String server,
+                              String appSecret, Integer schoolyearId = null) {
+        WebUntisSession session = null
+        try {
+            if (!appSecret) {
+                throw new WebUntisException("appSecret ist für 2017 API Methoden erforderlich")
+            }
+
+            session = webUntisClient.authenticateWithSecret(school, username, appSecret, server)
+
+            // Holidays aus Master-Daten holen
+            def holidays = session.getHolidays()
+            def schoolyears = session.getSchoolYears()
+            def today = LocalDate.now()
+
+            if (schoolyearId == null) {
+                // Standard: Ab heute bis Ende des nächsten Kalenderjahres
+                def currentYear = today.getYear()
+                def nextYear = currentYear + 1
+                def endOfNextYear = LocalDate.of(nextYear, 12, 31)
+
+                holidays = holidays.findAll { holiday ->
+                    def holidayStart = LocalDate.parse(holiday.startDate as String)
+                    def holidayEnd = LocalDate.parse(holiday.endDate as String)
+
+                    // Ferien noch nicht komplett vorbei UND starten vor Ende des nächsten Jahres
+                    return !holidayEnd.isBefore(today) && !holidayStart.isAfter(endOfNextYear)
+                }
+
+                println "DEBUG: Ferien von heute (${today}) bis Ende ${nextYear} (${endOfNextYear}): ${holidays.size()}"
+
+            } else {
+                // Spezifisches Schuljahr (optional weiterhin verfügbar)
+                def schoolyear = schoolyears.find { it.id == schoolyearId }
+                if (schoolyear) {
+                    def startDate = LocalDate.parse(schoolyear.startDate as String)
+                    def endDate = LocalDate.parse(schoolyear.endDate as String)
+
+                    holidays = holidays.findAll { holiday ->
+                        def holidayStart = LocalDate.parse(holiday.startDate as String)
+                        def holidayEnd = LocalDate.parse(holiday.endDate as String)
+
+                        // Im angegebenen Schuljahr UND noch nicht vorbei
+                        return !(holidayEnd.isBefore(startDate) || holidayStart.isAfter(endDate))
+                                && !holidayEnd.isBefore(today)
+                    }
+
+                    println "DEBUG: Ferien für Schuljahr ${schoolyear.name} (ab heute): ${holidays.size()}"
+                }
+            }
+
+            return formatHolidaysWithTimeInfo(holidays, schoolyears)
+
+        } finally {
+            if (session) {
+                webUntisClient.logout(session)
+            }
+        }
+    }
+
     // ========== Formatting Methods ==========
+
+    private List<Map> formatHolidaysWithTimeInfo(List<Map> holidays, List<Map> schoolyears) {
+        return holidays.collect { holiday ->
+            def startDate = LocalDate.parse(holiday.startDate as String)
+            def endDate = LocalDate.parse(holiday.endDate as String)
+
+            // Dauer berechnen
+            def durationDays = java.time.temporal.ChronoUnit.DAYS.between(startDate, endDate) + 1
+
+            // Status bestimmen
+            def today = LocalDate.now()
+            def status
+            def statusDescription
+
+            if (endDate.isBefore(today)) {
+                // Sollte nicht mehr vorkommen durch Filterung
+                status = "past"
+                statusDescription = "Vergangen"
+            } else if (startDate.isAfter(today)) {
+                status = "upcoming"
+                statusDescription = "Bevorstehend"
+            } else {
+                // Heute liegt zwischen Start und Ende
+                status = "current"
+                statusDescription = "Aktuell laufend"
+            }
+
+            // Tage bis Start/Ende
+            def daysUntilStart = java.time.temporal.ChronoUnit.DAYS.between(today, startDate)
+            def daysUntilEnd = java.time.temporal.ChronoUnit.DAYS.between(today, endDate)
+
+            // Schuljahr ermitteln
+            def schoolyear = schoolyears.find { sy ->
+                def syStart = LocalDate.parse(sy.startDate as String)
+                def syEnd = LocalDate.parse(sy.endDate as String)
+
+                return !(endDate.isBefore(syStart) || startDate.isAfter(syEnd))
+            }
+
+            // Ferientyp erkennen
+            def holidayType = categorizeHoliday(holiday.name as String, holiday.longName as String)
+
+            return [
+                    id: holiday.id,
+                    name: holiday.name,
+                    longName: holiday.longName,
+                    startDate: holiday.startDate,
+                    endDate: holiday.endDate,
+                    durationDays: durationDays,
+                    status: status,
+                    statusDescription: statusDescription,
+                    daysUntilStart: daysUntilStart > 0 ? daysUntilStart : null,
+                    daysUntilEnd: daysUntilEnd >= 0 ? daysUntilEnd : null,
+                    startWeekday: getWeekdayName(holiday.startDate as String),
+                    endWeekday: getWeekdayName(holiday.endDate as String),
+                    schoolyear: schoolyear?.name,
+                    schoolyearId: schoolyear?.id,
+                    holidayType: holidayType,
+                    isLongWeekend: durationDays <= 3,
+                    isWeekVacation: durationDays > 3 && durationDays <= 7,
+                    isMultiWeekVacation: durationDays > 7
+            ]
+        }.sort { a, b ->
+            // Chronologisch sortieren (früheste zuerst)
+            LocalDate.parse(a.startDate as String) <=> LocalDate.parse(b.startDate as String)
+        }
+    }
+
+    private String categorizeHoliday(String name, String longName) {
+        def nameUpper = name.toUpperCase()
+        def longNameUpper = longName.toUpperCase()
+
+        // Hauptferien
+        if (nameUpper.contains("HERBST") || longNameUpper.contains("HERBST")) {
+            return "Herbstferien"
+        }
+        if (nameUpper.contains("WEIHNACHT") || longNameUpper.contains("WEIHNACHT")) {
+            return "Weihnachtsferien"
+        }
+        if (nameUpper.contains("OSTER") || longNameUpper.contains("OSTER")) {
+            return "Osterferien"
+        }
+        if (nameUpper.contains("PFINGST") || longNameUpper.contains("PFINGST")) {
+            return "Pfingstferien"
+        }
+        if (nameUpper.contains("SOMMER") || longNameUpper.contains("SOMMER")) {
+            return "Sommerferien"
+        }
+
+        // Feiertage
+        if (nameUpper.contains("TAG DER ARBEIT") || nameUpper == "1.5.") {
+            return "Feiertag - Tag der Arbeit"
+        }
+        if (nameUpper.contains("EINHEIT") || nameUpper == "3.10.") {
+            return "Feiertag - Tag der Deutschen Einheit"
+        }
+        if (nameUpper.contains("ALLERHEILIGEN") || nameUpper == "1.11.") {
+            return "Feiertag - Allerheiligen"
+        }
+        if (nameUpper.contains("HIMMELFAHRT") || longNameUpper.contains("HIMMELFAHRT")) {
+            return "Feiertag - Christi Himmelfahrt"
+        }
+        if (nameUpper.contains("FRONLEICHNAM") || longNameUpper.contains("FRONLEICHNAM")) {
+            return "Feiertag - Fronleichnam"
+        }
+        if (nameUpper.contains("PFINGSTMONTAG") || longNameUpper.contains("PFINGSTMONTAG")) {
+            return "Feiertag - Pfingstmontag"
+        }
+
+        // Einzelne freie Tage
+        if (longNameUpper.contains("ELTERNSPRECHTAG")) {
+            return "Schulveranstaltung - Elternsprechtag"
+        }
+        if (longNameUpper.contains("ZEUGNIS")) {
+            return "Schulveranstaltung - Zeugnisausgabe"
+        }
+
+        return "Sonstiger Ferientag"
+    }
+
+
 
     // Formatierung für 2017 API mit Zeitinfos
     private List<Map> formatTimetableWithTimeInfo(List<Map> timetable) {
