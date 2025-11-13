@@ -12,13 +12,30 @@ repositories {
 }
 
 dependencies {
+    // Spring Boot Starters
     implementation 'org.springframework.boot:spring-boot-starter-web'
     implementation 'org.springframework.boot:spring-boot-starter-webflux'
+    implementation 'org.springframework.boot:spring-boot-starter-validation'
+
+    // Groovy
     implementation 'org.apache.groovy:groovy'
+
+    // JSON Processing
     implementation 'com.fasterxml.jackson.core:jackson-databind'
+
+    // Utilities
     implementation 'commons-codec:commons-codec:1.15'
+
+    // QR Code Processing
     implementation 'com.google.zxing:core:3.5.2'
     implementation 'com.google.zxing:javase:3.5.2'
 
+    // API Documentation
+    implementation 'org.springdoc:springdoc-openapi-starter-webmvc-ui:2.2.0'
+
+    // Rate Limiting
+    implementation 'com.github.vladimir-bukhtoyarov:bucket4j-core:7.6.0'
+
+    // Testing
     testImplementation 'org.springframework.boot:spring-boot-starter-test'
 }

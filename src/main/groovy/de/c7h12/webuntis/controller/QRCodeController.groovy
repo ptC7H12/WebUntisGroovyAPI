@@ -1,11 +1,15 @@
 package de.c7h12.webuntis.controller
 
 import de.c7h12.webuntis.service.QRCodeService
+import groovy.transform.CompileStatic
+import groovy.util.logging.Slf4j
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.http.ResponseEntity
 import org.springframework.web.bind.annotation.*
 import org.springframework.web.multipart.MultipartFile
 
+@Slf4j
+@CompileStatic
 @RestController
 @RequestMapping("/api/qrcode")
 @CrossOrigin(origins = "*")
@@ -47,7 +51,7 @@ class QRCodeController {
             return ResponseEntity.ok(parsedData)
 
         } catch (Exception e) {
-            println "ERROR: QR-Code Extraktion fehlgeschlagen: ${e.message}"
+            log.error("QR-Code extraction failed", e)
             return ResponseEntity.badRequest()
                     .body([
                             success: false,
@@ -84,7 +88,7 @@ class QRCodeController {
             return ResponseEntity.ok(parsedData)
 
         } catch (Exception e) {
-            println "ERROR: Base64 QR-Code Extraktion fehlgeschlagen: ${e.message}"
+            log.error("Base64 QR-Code extraction failed", e)
             return ResponseEntity.badRequest()
                     .body([
                             success: false,
@@ -120,7 +124,7 @@ class QRCodeController {
             return ResponseEntity.ok(parsedData)
 
         } catch (Exception e) {
-            println "ERROR: Binary QR-Code Extraktion fehlgeschlagen: ${e.message}"
+            log.error("Binary QR-Code extraction failed", e)
             return ResponseEntity.badRequest()
                     .body([
                             success: false,
@@ -158,7 +162,7 @@ class QRCodeController {
             return ResponseEntity.ok(parsedData)
 
         } catch (Exception e) {
-            println "ERROR: Enhanced QR-Code Extraktion fehlgeschlagen: ${e.message}"
+            log.error("Enhanced QR-Code extraction failed", e)
             return ResponseEntity.badRequest()
                     .body([
                             success: false,
@@ -250,7 +254,7 @@ class QRCodeController {
             return ResponseEntity.ok(parsedData)
 
         } catch (Exception e) {
-            println "ERROR: QR-Code Extraktion/Auth fehlgeschlagen: ${e.message}"
+            log.error("QR-Code extraction/auth failed", e)
             return ResponseEntity.badRequest()
                     .body([
                             success: false,
