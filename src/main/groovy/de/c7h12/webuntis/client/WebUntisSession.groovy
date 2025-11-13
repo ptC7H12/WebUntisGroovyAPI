@@ -1,103 +1,97 @@
 package de.c7h12.webuntis.client
 
+import de.c7h12.webuntis.constants.WebUntisConstants
+import groovy.transform.CompileStatic
+
+/**
+ * Represents a WebUntis API session with authentication and master data caching
+ */
+@CompileStatic
 class WebUntisSession {
     String sessionId
     int personId
     String cookies
     String school
     String server
-    String appSecret     // Für erweiterte Authentifizierung
-    String username      // Für 2017 API
-    Map masterData       // Für Master-Daten Cache
+    String appSecret     // For enhanced 2017 API authentication
+    String username      // For 2017 API
+    Map masterData       // Master data cache
 
-    // Standard-Konstruktor (bisherige API)
-    WebUntisSession(String sessionId, int personId, String cookies, String school, String server) {
-        this.sessionId = sessionId
-        this.personId = personId
-        this.cookies = cookies
-        this.school = school
-        this.server = server
-        this.appSecret = null
-        this.username = null
-        this.masterData = null
+    private WebUntisSession() {
+        // Private constructor - use builder
     }
 
-    // Erweiterte Konstruktor mit appSecret (für 2017 API)
-    WebUntisSession(String sessionId, int personId, String cookies, String school, String server, String appSecret) {
-        this.sessionId = sessionId
-        this.personId = personId
-        this.cookies = cookies
-        this.school = school
-        this.server = server
-        this.appSecret = appSecret
-        this.username = null
-        this.masterData = null
+    /**
+     * Creates a new builder for WebUntisSession
+     */
+    static Builder builder() {
+        return new Builder()
     }
 
-    // Vollständiger Konstruktor mit username (für 2017 API mit OTP)
-    WebUntisSession(String sessionId, int personId, String cookies, String school, String server, String appSecret, String username) {
-        this.sessionId = sessionId
-        this.personId = personId
-        this.cookies = cookies
-        this.school = school
-        this.server = server
-        this.appSecret = appSecret
-        this.username = username
-        this.masterData = null
-    }
-
-    // Hilfsmethode um zu prüfen ob Session für 2017 API geeignet ist
+    /**
+     * Checks if session is compatible with 2017 API
+     */
     boolean is2017Compatible() {
         return appSecret != null && username != null
     }
 
-    // Hilfsmethode um zu prüfen ob Master-Daten verfügbar sind
+    /**
+     * Checks if master data is available in cache
+     */
     boolean hasMasterData() {
         return masterData != null && !masterData.isEmpty()
     }
 
-    // Hilfsmethode um Master-Data Cache-Alter zu prüfen
+    /**
+     * Returns age of cached master data in milliseconds
+     */
     long getMasterDataAge() {
         if (masterData?.timestamp) {
-            return System.currentTimeMillis() - masterData.timestamp
+            return System.currentTimeMillis() - (masterData.timestamp as Long)
         }
-        return Long.MAX_VALUE // Sehr alt wenn kein timestamp
+        return Long.MAX_VALUE // Very old if no timestamp
     }
 
-    // Hilfsmethode um spezifische Master-Daten zu holen
+    /**
+     * Checks if master data cache is still valid
+     */
+    boolean isMasterDataValid() {
+        return hasMasterData() && getMasterDataAge() < WebUntisConstants.MASTER_DATA_CACHE_VALIDITY_MS
+    }
+
+    // Helper methods to retrieve specific master data
     Map getSubjectsMap() {
-        return masterData?.subjects ?: [:]
+        return masterData?.subjects as Map ?: [:]
     }
 
     Map getTeachersMap() {
-        return masterData?.teachers ?: [:]
+        return masterData?.teachers as Map ?: [:]
     }
 
     Map getRoomsMap() {
-        return masterData?.rooms ?: [:]
+        return masterData?.rooms as Map ?: [:]
     }
 
     Map getClassesMap() {
-        return masterData?.klassen ?: [:]
+        return masterData?.klassen as Map ?: [:]
     }
 
     Map getDepartmentsMap() {
-        return masterData?.departments ?: [:]
+        return masterData?.departments as Map ?: [:]
     }
 
     List getHolidays() {
-        return masterData?.holidays ?: []
+        return masterData?.holidays as List ?: []
     }
 
     List getSchoolYears() {
-        return masterData?.schoolyears ?: []
+        return masterData?.schoolyears as List ?: []
     }
 
     Map getTimeGrid() {
-        return masterData?.timeGrid ?: [:]
+        return masterData?.timeGrid as Map ?: [:]
     }
 
-    // Debug-String für Logging
     @Override
     String toString() {
         def sb = new StringBuilder()
@@ -114,5 +108,72 @@ class WebUntisSession {
         }
         sb.append("}")
         return sb.toString()
+    }
+
+    /**
+     * Builder for WebUntisSession
+     */
+    static class Builder {
+        private String sessionId
+        private int personId
+        private String cookies
+        private String school
+        private String server
+        private String appSecret
+        private String username
+        private Map masterData
+
+        Builder sessionId(String sessionId) {
+            this.sessionId = sessionId
+            return this
+        }
+
+        Builder personId(int personId) {
+            this.personId = personId
+            return this
+        }
+
+        Builder cookies(String cookies) {
+            this.cookies = cookies
+            return this
+        }
+
+        Builder school(String school) {
+            this.school = school
+            return this
+        }
+
+        Builder server(String server) {
+            this.server = server
+            return this
+        }
+
+        Builder appSecret(String appSecret) {
+            this.appSecret = appSecret
+            return this
+        }
+
+        Builder username(String username) {
+            this.username = username
+            return this
+        }
+
+        Builder masterData(Map masterData) {
+            this.masterData = masterData
+            return this
+        }
+
+        WebUntisSession build() {
+            def session = new WebUntisSession()
+            session.sessionId = this.sessionId
+            session.personId = this.personId
+            session.cookies = this.cookies
+            session.school = this.school
+            session.server = this.server
+            session.appSecret = this.appSecret
+            session.username = this.username
+            session.masterData = this.masterData
+            return session
+        }
     }
 }
